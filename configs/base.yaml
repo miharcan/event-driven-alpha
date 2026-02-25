@@ -1,0 +1,11 @@
+data:
+  price_path: data/raw/gold_prices.csv
+  news_path: data/raw/news.json
+
+model:
+  type: baseline_regression
+  target: return
+
+training:
+  test_size: 0.2
+  random_state: 42
