@@ -14,5 +14,5 @@ price_features:
 output_dir: "outputs"
 
 model_version: "baseline_v1"
-model_type: "linear"   # options: linear | ridge
-ridge_alpha: 1.0
+model_type: "ridge"   # options: linear | ridge
+ridge_alpha: 0.10
