@@ -50,18 +50,17 @@ def run_pipeline(config: dict):
         if col.startswith("cat_") or col == "article_count"
     ]
 
-    if config["model_type"] == "linear_regression":
-        trainer = get_model_trainer(config["model_type"], config)
-    # elif config["model_type"] == "ridge":
-    #     trainer = lambda df, feature_cols: train_ridge_regression(
-    #         df, feature_cols=feature_cols, alpha=config.get("ridge_alpha", 1.0)
-    #     )
-    else:
-        raise ValueError("Unsupported model_type")
+    trainer = get_model_trainer(config["model_type"], config)
+
 
     res_price = trainer(df_model, feature_cols=price_cols)
     res_news = trainer(df_model, feature_cols=news_cols)
-    res_combined = trainer(df_model)
+    all_features = [
+        col for col in df_model.columns
+        if col != "target"
+    ]
+
+    res_combined = trainer(df_model, feature_cols=all_features)
 
     da_price = directional_accuracy(res_price["y_test"], res_price["predictions"])
     da_news = directional_accuracy(res_news["y_test"], res_news["predictions"])
