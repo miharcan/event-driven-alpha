@@ -1,92 +1,150 @@
 # Event-Driven Alpha
 
-A research framework for modeling asset price dynamics using event-driven signals and time-series learning.
+## A Framework for Semantic News Signal Extraction
 
----
+------------------------------------------------------------------------
 
-## 🎯 Objective
+## Summary
 
-This project explores whether structured news events contain predictive information for next-day asset returns.
+This project evaluates whether structured and semantic news signals
+contain actionable information for forecasting next-day asset returns
+under strict out-of-sample validation.
 
-The workflow implements:
+The framework is designed with institutional research standards in mind:
 
-- Clean data ingestion
-- Time-series feature engineering
-- Event aggregation
-- Leakage-free alignment
-- Baseline regression modeling
-- Controlled model comparison
+-   Chronological walk-forward validation\
+-   Explicit leakage controls\
+-   Fold-level performance transparency\
+-   Controlled model comparison
 
----
+The objective is not to maximize backtest performance, but to determine
+whether news-derived signals exhibit stable, regime-aware predictive
+behavior.
 
-## 📂 Project Structure
+------------------------------------------------------------------------
 
-```bash
-event-driven-alpha/
-├── src/
-│ ├── data/ # Data loading and alignment
-│ ├── features/ # Feature engineering
-│ ├── models/ # Baseline models
-├── configs/
-└── data/ # Ignored (raw datasets)
-```
+## Challenge
 
----
+Can daily macro-news information improve directional forecasting of gold
+returns beyond autoregressive price structure?
 
-## 🔬 Methodology
+Specifically:
 
-### 1️⃣ Price Features
-- Log returns
-- Rolling volatility (21-day)
-- Autoregressive lags
+-   Do simple category counts add value?
+-   Do semantic embeddings capture latent macro regime shifts?
+-   Is the signal persistent or regime-dependent?
 
-### 2️⃣ News Features
-- Daily article count
-- Daily category frequency matrix
-- Aggregated to trading-day resolution
+------------------------------------------------------------------------
 
-### 3️⃣ Alignment
-- Inner join on overlapping dates
-- Target defined as next-day log return
-- Strict avoidance of look-ahead bias
+## Data & Feature Architecture
 
-### 4️⃣ Modeling
-Linear regression baseline:
+### Price Features
 
-- Price-only model
-- News-only model
-- Combined model
+-   Log returns\
+-   21-day rolling volatility\
+-   Autoregressive lags
 
----
+### Structured News Features
 
-## 📊 Current Findings
+-   Daily article count\
+-   Category frequency aggregation
 
-Using daily data (2012–2022):
+### Semantic News Features
 
-- Price-only model: ~53–54% directional accuracy
-- News-only model: ~52%
-- Combined model: ~52%
+-   Sentence-transformer headline embeddings (`all-MiniLM-L6-v2`)
+-   384-dimensional representation per headline\
+-   Daily mean embedding aggregation\
+-   PCA dimensionality reduction applied *inside training folds only*
 
-Raw category counts do not add incremental predictive power beyond autoregressive price structure.
+All transformations are strictly time-aligned.
 
-This highlights:
-- The difficulty of daily return prediction
-- The importance of feature quality
-- The risk of high-dimensional noise
+------------------------------------------------------------------------
 
----
+## Validation Framework
 
-## 🚀 Next Research Directions
+Evaluation uses expanding-window walk-forward validation:
 
-- Regularized regression (Ridge/Lasso)
-- Dimensionality reduction (PCA)
-- Sentiment-based features
-- Walk-forward validation
-- Statistical significance testing
+-   Initial 60% training period\
+-   Sequential forward testing folds\
+-   PCA fit exclusively on training data\
+-   No future information leakage
 
----
+Metrics reported:
 
-## ⚠️ Disclaimer
+-   Directional Accuracy (DA)
+-   MSE
+-   R²
+-   Fold-level DA stability
 
-This project is for research and educational purposes only.
-No trading or investment advice is implied.
+This framework mirrors a live deployment retraining cycle.
+
+------------------------------------------------------------------------
+
+## Empirical Findings (Leakage-Safe Walk-Forward)
+
+  Model                Directional Accuracy
+  -------------------- ----------------------
+  Price-only           \~0.48
+  Structured-only      \~0.52
+  Embeddings-only      \~0.52
+  Price + Embeddings   \~0.52
+
+### Observations
+
+-   Price-only models underperform random threshold.
+-   Structured news categories provide modest lift.
+-   Semantic embeddings show **regime-dependent performance**.
+-   Average predictive edge remains modest (\~52% DA).
+-   Stronger performance appears concentrated in later macro-stress
+    regimes.
+
+------------------------------------------------------------------------
+
+## Interpretation for Portfolio Context
+
+The findings suggest:
+
+1.  Daily semantic signals are not universally predictive.
+2.  Predictive power increases during periods of elevated macro
+    instability.
+3.  Embeddings may function as a **macro regime detector** rather than a
+    stable daily alpha source.
+4.  Strict leakage controls materially reduce overstated backtest
+    performance.
+
+From a portfolio perspective:
+
+-   This is not yet a standalone alpha strategy.
+-   It may serve as a conditional overlay.
+-   It may improve risk allocation during macro stress periods.
+
+------------------------------------------------------------------------
+
+## Potential Applications
+
+-   Volatility-conditioned signal activation\
+-   Macro stress regime classification\
+-   Risk budget adjustment overlay\
+-   Multi-asset validation (commodities, FX, indices)\
+-   Ensemble integration with macro models
+
+------------------------------------------------------------------------
+
+## Project Status
+
+Current stage:\
+Leakage-controlled, walk-forward validated research prototype.
+
+Next steps:
+
+-   Regime segmentation analysis\
+-   Multi-asset cross-validation\
+-   Rolling Sharpe analysis\
+-   Statistical significance testing
+
+------------------------------------------------------------------------
+
+## Disclaimer
+
+This material is for informational purposes only.\
+It does not constitute investment advice or a recommendation to trade.
