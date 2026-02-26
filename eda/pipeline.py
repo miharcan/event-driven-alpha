@@ -14,10 +14,8 @@ from src.features.price_features import (
 from src.data.news_loader import load_news_json
 from src.features.news_features import build_daily_news_features
 from src.data.alignment import align_price_and_news
-from src.models.baseline_regression import (
-    train_baseline_regression,
-    directional_accuracy,
-)
+from src.models.registry import get_model_trainer
+from src.models.baseline_regression import directional_accuracy
 
 
 logger = logging.getLogger(__name__)
@@ -52,13 +50,20 @@ def run_pipeline(config: dict):
         if col.startswith("cat_") or col == "article_count"
     ]
 
-    res_price = train_baseline_regression(df_model, feature_cols=price_cols)
+    trainer = get_model_trainer(config["model_type"], config)
+
+
+    res_price = trainer(df_model, feature_cols=price_cols)
+    res_news = trainer(df_model, feature_cols=news_cols)
+    all_features = [
+        col for col in df_model.columns
+        if col != "target"
+    ]
+
+    res_combined = trainer(df_model, feature_cols=all_features)
+
     da_price = directional_accuracy(res_price["y_test"], res_price["predictions"])
-
-    res_news = train_baseline_regression(df_model, feature_cols=news_cols)
     da_news = directional_accuracy(res_news["y_test"], res_news["predictions"])
-
-    res_combined = train_baseline_regression(df_model)
     da_combined = directional_accuracy(
         res_combined["y_test"], res_combined["predictions"]
     )
@@ -73,16 +78,6 @@ def run_pipeline(config: dict):
     logger.info(f"Price-only DA: {da_price:.4f}")
     logger.info(f"News-only DA: {da_news:.4f}")
     logger.info(f"Combined DA: {da_combined:.4f}")
-
-    # results = {
-    #     "price_da": da_price,
-    #     "news_da": da_news,
-    #     "combined_da": da_combined,
-    # }
-
-    res_price = train_baseline_regression(df_model, feature_cols=price_cols)
-    res_news = train_baseline_regression(df_model, feature_cols=news_cols)
-    res_combined = train_baseline_regression(df_model)
 
     results = {
         "price_only": collect_metrics(
