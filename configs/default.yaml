@@ -10,3 +10,9 @@ price_features:
   - log_return_lag1
   - log_return_lag2
   - log_return_lag3
+
+output_dir: "outputs"
+
+model_version: "baseline_v1"
+model_type: "linear"   # options: linear | ridge
+ridge_alpha: 1.0
