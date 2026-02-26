@@ -8,6 +8,8 @@ from src.models.baseline_regression import directional_accuracy
 
 def train(df, feature_cols, alpha=1.0, target_col="target"):
 
+    all_test_indices = []
+
     X = df[feature_cols].copy()
     y = df[target_col]
 
@@ -32,6 +34,8 @@ def train(df, feature_cols, alpha=1.0, target_col="target"):
 
         X_test = X.iloc[train_end:test_end].copy()
         y_test = y.iloc[train_end:test_end]
+
+        all_test_indices.extend(X_test.index)
 
         # ---- Detect embedding columns
         embedding_cols = [c for c in X.columns if c.startswith("emb_")]
@@ -74,6 +78,7 @@ def train(df, feature_cols, alpha=1.0, target_col="target"):
         "r2": r2,
         "y_test": np.array(all_y_test),
         "predictions": np.array(all_predictions),
+        "test_index": all_test_indices,
         "fold_das": fold_das,
         "mean_fold_da": np.mean(fold_das),
     }
