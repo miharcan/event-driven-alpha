@@ -1,5 +1,9 @@
 import logging
 from pathlib import Path
+import json
+from pathlib import Path
+import pandas as pd
+from datetime import datetime
 
 from src.data.loader import load_auronum_series
 from src.features.price_features import (
@@ -59,12 +63,79 @@ def run_pipeline(config: dict):
         res_combined["y_test"], res_combined["predictions"]
     )
 
+    output_dir = Path(config.get("output_dir", "outputs"))
+    pred_df = pd.DataFrame({
+        "y_true": res_combined["y_test"],
+        "y_pred": res_combined["predictions"],
+    })
+    pred_df.to_csv(output_dir / "predictions.csv")
+
     logger.info(f"Price-only DA: {da_price:.4f}")
     logger.info(f"News-only DA: {da_news:.4f}")
     logger.info(f"Combined DA: {da_combined:.4f}")
 
-    return {
-        "price_da": da_price,
-        "news_da": da_news,
-        "combined_da": da_combined,
+    # results = {
+    #     "price_da": da_price,
+    #     "news_da": da_news,
+    #     "combined_da": da_combined,
+    # }
+
+    res_price = train_baseline_regression(df_model, feature_cols=price_cols)
+    res_news = train_baseline_regression(df_model, feature_cols=news_cols)
+    res_combined = train_baseline_regression(df_model)
+
+    results = {
+        "price_only": collect_metrics(
+            res_price,
+            experiment_name="price_only",
+            feature_set="price_features",
+        ),
+        "news_only": collect_metrics(
+            res_news,
+            experiment_name="news_only",
+            feature_set="news_features",
+        ),
+        "combined": collect_metrics(
+            res_combined,
+            experiment_name="combined",
+            feature_set="price+news_features",
+        ),
     }
+
+    persist_outputs(results, config)
+
+    return results
+
+
+def collect_metrics(res, experiment_name, feature_set):
+    return {
+        "experiment_name": experiment_name,
+        "feature_set": feature_set,
+        "metrics": {
+            "mse": res["mse"],
+            "r2": res["r2"],
+            "directional_accuracy": directional_accuracy(
+                res["y_test"], res["predictions"]
+            ),
+        },
+    }
+
+
+def persist_outputs(results, config):
+
+    output_dir = Path(config.get("output_dir", "outputs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact = {
+        "model_version": config.get("model_version"),
+        "model_type": config.get("model_type"),
+        "timestamp": datetime.utcnow().isoformat(),
+        "experiments": results,
+    }
+
+    metrics_path = output_dir / "metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(artifact, f, indent=4)
+
+    return output_dir
+
