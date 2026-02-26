@@ -29,6 +29,13 @@ def train(df, feature_cols, alpha=1.0, target_col="target"):
         train_end = initial_train_size + i * fold_size
         test_end = train_end + fold_size
 
+        print(
+            f"Fold {i+1}: "
+            f"Train end {df.index[train_end]} | "
+            f"Test start {df.index[train_end]} | "
+            f"Test end {df.index[test_end-1]}"
+        )
+
         X_train = X.iloc[:train_end].copy()
         y_train = y.iloc[:train_end]
 
