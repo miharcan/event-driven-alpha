@@ -1,0 +1,12 @@
+price_path: "data/raw/HistoricPriceData.xlsx"
+price_date_col: 4
+price_value_col: 5
+
+news_path: "data/raw/News_Category_Dataset_v3.json"
+
+price_features:
+  - log_return
+  - rolling_vol_21
+  - log_return_lag1
+  - log_return_lag2
+  - log_return_lag3
