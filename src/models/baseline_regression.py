@@ -1,6 +1,11 @@
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
+import numpy as np
+
+
+def directional_accuracy(y_true, y_pred):
+    return np.mean(np.sign(y_true) == np.sign(y_pred))
 
 
 def train_test_split_time_series(df: pd.DataFrame, test_size: float = 0.2):

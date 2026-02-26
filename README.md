@@ -21,6 +21,7 @@ The workflow implements:
 
 ## 📂 Project Structure
 
+```bash
 event-driven-alpha/
 ├── src/
 │ ├── data/ # Data loading and alignment
@@ -28,7 +29,7 @@ event-driven-alpha/
 │ ├── models/ # Baseline models
 ├── configs/
 └── data/ # Ignored (raw datasets)
-
+```
 
 ---
 
