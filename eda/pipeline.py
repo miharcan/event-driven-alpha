@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import pandas as pd
 from datetime import datetime
+import numpy as np
 
 from src.data.loader import load_auronum_series
 from src.features.price_features import (
@@ -21,9 +22,21 @@ from src.features.embeddings import NewsEmbedder
 
 logger = logging.getLogger(__name__)
 
+macro_categories = [
+    "POLITICS",
+    "BUSINESS",
+    "WORLD NEWS",
+    "U.S. NEWS",
+    "THE WORLDPOST",
+    "WORLDPOST",
+    "MONEY",
+    "CRIME",
+    "ENVIRONMENT",
+]
+
 
 def run_pipeline(config: dict):
-
+    
     logger.info("Loading price data...")
     df_price = load_auronum_series(
         config["price_path"],
@@ -36,13 +49,16 @@ def run_pipeline(config: dict):
     df_price = add_lag_features(df_price, "log_return", 3)
 
     logger.info("Loading news data...")
-    
-    # df_news_raw = load_news_json(config["news_path"])
-    # df_news = build_daily_news_features(df_news_raw)
 
     df_news_raw = load_news_json(config["news_path"])
-    # print("NEWS COLUMNS:", df_news_raw.columns.tolist())
-    # exit()
+    original_count = len(df_news_raw)
+
+    df_news_raw = df_news_raw[
+        df_news_raw["category"].isin(macro_categories)
+    ]
+    logger.info(f"Original headlines: {original_count}")
+    logger.info(f"Filtered headlines: {len(df_news_raw)}")
+    logger.info(f"Remaining categories: {sorted(df_news_raw['category'].unique())}")
 
     # ---- Structured category features (existing)
     df_news_structured = build_daily_news_features(df_news_raw)
@@ -121,6 +137,34 @@ def run_pipeline(config: dict):
     da_embeddings = directional_accuracy(
         res_embeddings["y_test"], res_embeddings["predictions"]
     )
+
+    # Extract full model dataframe (already aligned)
+    # vol_series = df_model.loc[res_embeddings["y_test"].index, "rolling_volatility"]
+    vol_series = df_price.loc[
+        res_embeddings["test_index"],
+        "rolling_vol_21"
+    ]
+
+    vol_median = df_model["rolling_vol_21"].median()
+
+    high_vol_mask = vol_series > vol_median
+    low_vol_mask = vol_series <= vol_median
+
+    y_test = np.array(res_embeddings["y_test"])
+    preds = np.array(res_embeddings["predictions"])
+
+    da_high_vol = directional_accuracy(
+        y_test[high_vol_mask.values],
+        preds[high_vol_mask.values]
+    )
+
+    da_low_vol = directional_accuracy(
+        y_test[low_vol_mask.values],
+        preds[low_vol_mask.values]
+    )
+
+    logger.info(f"Embeddings DA (High Vol): {da_high_vol:.4f}")
+    logger.info(f"Embeddings DA (Low Vol): {da_low_vol:.4f}")
 
     da_price_embeddings = directional_accuracy(
         res_price_embeddings["y_test"],
