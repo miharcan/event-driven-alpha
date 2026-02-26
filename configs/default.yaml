@@ -1,4 +1,4 @@
-price_path: "data/raw/HistoricPriceData.xlsx"
+price_path: "data/raw/HistoricPrices.csv" # "data/raw/HistoricPriceData.xlsx"
 price_date_col: 4
 price_value_col: 5
 

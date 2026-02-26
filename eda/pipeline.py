@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 
-from src.data.loader import load_auronum_series
+# from src.data.loader import load_auronum_series
 from src.features.price_features import (
     compute_log_returns,
     compute_rolling_volatility,
@@ -22,190 +22,111 @@ from src.features.embeddings import NewsEmbedder
 
 logger = logging.getLogger(__name__)
 
-macro_categories = [
-    "POLITICS",
-    "BUSINESS",
-    "WORLD NEWS",
-    "U.S. NEWS",
-    "THE WORLDPOST",
-    "WORLDPOST",
-    "MONEY",
-    "CRIME",
-    "ENVIRONMENT",
-]
-
 
 def run_pipeline(config: dict):
+
+    macro_categories = [
+        "POLITICS",
+        "BUSINESS",
+        "WORLD NEWS",
+        "U.S. NEWS",
+        "THE WORLDPOST",
+        "WORLDPOST",
+        "MONEY",
+        "CRIME",
+        "ENVIRONMENT",
+    ]
+
+    asset_map = {
+        "Gold": ("Date Gold", "Value Gold"),
+        "Silver": ("Date Silver", "Value Silver"),
+        "Platinum": ("Date Platinum", "Value Platinum"),
+        "Copper": ("Date Copper", "Value Copper"),
+        "Crude": ("Date Crude Oil", "Value Crude Oil"),
+        "HeatingOil": ("Date Heating Oil", "Value Heating Oil"),
+        "Corn": ("Date Corn", "Value Corn"),
+        "Coffee": ("Date Coffee", "Value Coffee"),
+    }
     
-    logger.info("Loading price data...")
-    df_price = load_auronum_series(
-        config["price_path"],
-        date_col=config["price_date_col"],
-        price_col=config["price_value_col"],
-    )
+    price_path = config["price_path"]
 
-    df_price = compute_log_returns(df_price)
-    df_price = compute_rolling_volatility(df_price)
-    df_price = add_lag_features(df_price, "log_return", 3)
+    if price_path.endswith(".csv"):
+        df_raw = pd.read_csv(price_path)
+    else:
+        df_raw = pd.read_excel(price_path)
 
-    logger.info("Loading news data...")
-
+    # ----- NEWS -----
     df_news_raw = load_news_json(config["news_path"])
-    original_count = len(df_news_raw)
-
     df_news_raw = df_news_raw[
         df_news_raw["category"].isin(macro_categories)
     ]
-    logger.info(f"Original headlines: {original_count}")
-    logger.info(f"Filtered headlines: {len(df_news_raw)}")
-    logger.info(f"Remaining categories: {sorted(df_news_raw['category'].unique())}")
 
-    # ---- Structured category features (existing)
     df_news_structured = build_daily_news_features(df_news_raw)
 
     embedder = NewsEmbedder(
         model_name=config.get("embedding_model", "all-MiniLM-L6-v2")
     )
 
-    headline_embeddings = embedder.embed_headlines(
-        df_news_raw,
-        text_col=config.get("news_text_col", "headline")
-    )
-
+    headline_embeddings = embedder.embed_headlines(df_news_raw)
     daily_embeddings = embedder.aggregate_daily(
         df_news_raw,
         headline_embeddings
     )
 
-    # Rename columns for detection inside trainer
     daily_embeddings.columns = [
         f"emb_{i}" for i in range(daily_embeddings.shape[1])
     ]
 
-    # ---- Merge structured + embeddings
-    df_news = df_news_structured.join(daily_embeddings, how="left").fillna(0)
-
-    logger.info("Aligning datasets...")
-    df_model = align_price_and_news(df_price, df_news)
-    df_model = df_model.dropna()
-
-    logger.info(f"Dataset shape: {df_model.shape}")
-
-    price_cols = config["price_features"]
-    # news_cols = [
-    #     col for col in df_model.columns
-    #     if col.startswith("cat_") or col == "article_count"
-    # ]
-    # news_cols = [
-    #     col for col in df_model.columns
-    #     if col.startswith("cat_")
-    #     or col == "article_count"
-    #     or col.startswith("news_pca_")
-    # ]
+    df_news = df_news_structured.join(
+        daily_embeddings,
+        how="left"
+    ).fillna(0)
 
     trainer = get_model_trainer(config["model_type"], config)
 
-    # --- Feature blocks
-    structured_cols = [
-        col for col in df_model.columns
-        if col.startswith("cat_") or col == "article_count"
-    ]
+    # ----- MULTI-ASSET LOOP -----
+    for asset, (date_col, price_col) in asset_map.items():
 
-    embedding_cols = [
-        col for col in df_model.columns
-        if col.startswith("emb_")
-    ]
+        logger.info(f"--- Running {asset} ---")
 
-    # --- Experiments
-    res_price = trainer(df_model, feature_cols=price_cols)
-    res_structured = trainer(df_model, feature_cols=structured_cols)
-    res_embeddings = trainer(df_model, feature_cols=embedding_cols)
-    res_price_embeddings = trainer(
-        df_model,
-        feature_cols=price_cols + embedding_cols
-    )
+        if date_col not in df_raw.columns:
+            logger.info(f"{asset}: Missing columns.")
+            continue
 
-    # --- Directional Accuracy
-    da_price = directional_accuracy(
-        res_price["y_test"], res_price["predictions"]
-    )
+        df_price = df_raw[[date_col, price_col]].copy()
+        df_price.columns = ["date", "price"]
 
-    da_structured = directional_accuracy(
-        res_structured["y_test"], res_structured["predictions"]
-    )
+        df_price["date"] = pd.to_datetime(df_price["date"], errors="coerce")
+        df_price = df_price.dropna()
+        df_price = df_price.set_index("date").sort_index()
 
-    da_embeddings = directional_accuracy(
-        res_embeddings["y_test"], res_embeddings["predictions"]
-    )
+        df_price = compute_log_returns(df_price)
+        df_price = compute_rolling_volatility(df_price)
+        df_price = add_lag_features(df_price, "log_return", 3)
 
-    # Extract full model dataframe (already aligned)
-    # vol_series = df_model.loc[res_embeddings["y_test"].index, "rolling_volatility"]
-    vol_series = df_price.loc[
-        res_embeddings["test_index"],
-        "rolling_vol_21"
-    ]
+        df_model = align_price_and_news(df_price, df_news)
+        df_model = df_model.dropna()
 
-    vol_median = df_model["rolling_vol_21"].median()
+        if len(df_model) < 200:
+            logger.info(f"{asset}: Not enough overlapping data.")
+            continue
 
-    high_vol_mask = vol_series > vol_median
-    low_vol_mask = vol_series <= vol_median
+        embedding_cols = [
+            c for c in df_model.columns if c.startswith("emb_")
+        ]
 
-    y_test = np.array(res_embeddings["y_test"])
-    preds = np.array(res_embeddings["predictions"])
+        res = trainer(df_model, feature_cols=embedding_cols)
 
-    da_high_vol = directional_accuracy(
-        y_test[high_vol_mask.values],
-        preds[high_vol_mask.values]
-    )
+        da = directional_accuracy(
+            res["y_test"],
+            res["predictions"]
+        )
 
-    da_low_vol = directional_accuracy(
-        y_test[low_vol_mask.values],
-        preds[low_vol_mask.values]
-    )
+        logger.info(f"{asset} DA: {da:.4f}")
 
-    logger.info(f"Embeddings DA (High Vol): {da_high_vol:.4f}")
-    logger.info(f"Embeddings DA (Low Vol): {da_low_vol:.4f}")
-
-    da_price_embeddings = directional_accuracy(
-        res_price_embeddings["y_test"],
-        res_price_embeddings["predictions"]
-    )
-
-    logger.info(f"Price-only DA: {da_price:.4f}")
-    logger.info(f"Structured-only DA: {da_structured:.4f}")
-    logger.info(f"Embeddings-only DA: {da_embeddings:.4f}")
-    logger.info(f"Price + Embeddings DA: {da_price_embeddings:.4f}")
-
-    logger.info(f"Embeddings fold DAs: {res_embeddings['fold_das']}")
-    logger.info(f"Embeddings mean fold DA: {res_embeddings['mean_fold_da']:.4f}")
-
-
-    results = {
-        "price_only": collect_metrics(
-            res_price,
-            experiment_name="price_only",
-            feature_set="price_features",
-        ),
-        "structured_only": collect_metrics(
-            res_structured,
-            experiment_name="structured_only",
-            feature_set="structured_news_features",
-        ),
-        "embeddings_only": collect_metrics(
-            res_embeddings,
-            experiment_name="embeddings_only",
-            feature_set="semantic_news_features",
-        ),
-        "price_plus_embeddings": collect_metrics(
-            res_price_embeddings,
-            experiment_name="price_plus_embeddings",
-            feature_set="price+semantic_news_features",
-        ),
-    }
-
-    persist_outputs(results, config)
-
-    return results
+        if "fold_das" in res:
+            logger.info(f"{asset} Fold DAs: {res['fold_das']}")
+            logger.info(f"{asset} Mean Fold DA: {res['mean_fold_da']:.4f}")
 
 
 def collect_metrics(res, experiment_name, feature_set):

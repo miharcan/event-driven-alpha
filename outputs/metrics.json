@@ -1,0 +1,43 @@
+{
+    "model_version": "baseline_v1",
+    "model_type": "ridge",
+    "timestamp": "2026-02-26T21:40:18.679619",
+    "experiments": {
+        "price_only": {
+            "experiment_name": "price_only",
+            "feature_set": "price_features",
+            "metrics": {
+                "mse": 8.451778236927003e-05,
+                "r2": -0.004820375579542624,
+                "directional_accuracy": 0.5090361445783133
+            }
+        },
+        "structured_only": {
+            "experiment_name": "structured_only",
+            "feature_set": "structured_news_features",
+            "metrics": {
+                "mse": 8.465377243041678e-05,
+                "r2": -0.006437142850121758,
+                "directional_accuracy": 0.49096385542168675
+            }
+        },
+        "embeddings_only": {
+            "experiment_name": "embeddings_only",
+            "feature_set": "semantic_news_features",
+            "metrics": {
+                "mse": 8.812229576800788e-05,
+                "r2": -0.04767394326162799,
+                "directional_accuracy": 0.5180722891566265
+            }
+        },
+        "price_plus_embeddings": {
+            "experiment_name": "price_plus_embeddings",
+            "feature_set": "price+semantic_news_features",
+            "metrics": {
+                "mse": 8.847522132239187e-05,
+                "r2": -0.05186982699362552,
+                "directional_accuracy": 0.5180722891566265
+            }
+        }
+    }
+}
