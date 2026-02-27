@@ -4,17 +4,21 @@ import pandas as pd
 
 def compute_log_returns(df: pd.DataFrame, price_col: str = "price") -> pd.DataFrame:
     """
-    Compute log returns from price series.
-
-    Returns:
-        DataFrame with new column 'log_return'
+    Compute log returns from price series safely.
     """
     df = df.copy()
 
     if price_col not in df.columns:
         raise ValueError(f"{price_col} not found in DataFrame.")
 
-    df["log_return"] = np.log(df[price_col] / df[price_col].shift(1))
+    # Ensure numeric
+    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+
+    # Replace non-positive values with NaN
+    df.loc[df[price_col] <= 0, price_col] = np.nan
+
+    # Compute log return
+    df["log_return"] = np.log(df[price_col]).diff()
 
     return df
 
