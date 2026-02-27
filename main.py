@@ -5,6 +5,7 @@ from src.features.price_features import (
     compute_log_returns,
     compute_rolling_volatility,
     add_lag_features,
+    add_volatility_regime
 )
 from src.data.news_loader import load_news_json
 from src.features.news_features import build_daily_news_features
@@ -26,6 +27,7 @@ def build_dataset():
     df_price = compute_log_returns(df_price)
     df_price = compute_rolling_volatility(df_price)
     df_price = add_lag_features(df_price, "log_return", 3)
+    df_price = add_volatility_regime(df_price)
 
     print("Loading news data...")
     df_news_raw = load_news_json("data/raw/News_Category_Dataset_v3.json")

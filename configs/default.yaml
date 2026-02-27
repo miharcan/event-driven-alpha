@@ -12,9 +12,22 @@ price_features:
   - log_return_lag1
   - log_return_lag2
   - log_return_lag3
+  - rolling_vol_21_mean_252
+  - vol_regime_high
 
 output_dir: "outputs"
 
 model_version: "baseline_v1"
 model_type: "ridge"   # options: linear | ridge
 ridge_alpha: 0.10
+
+
+asset_keywords:
+  Gold: ["gold", "inflation", "fed", "dollar", "treasury", "rate hike"]
+  Silver: ["silver", "inflation", "industrial demand", "fed"]
+  Platinum: ["platinum", "automotive", "catalyst", "supply", "mine"]
+  Copper: ["copper", "china", "industrial", "construction", "infrastructure"]
+  Crude: ["oil", "opec", "inventory", "production", "geopolitics"]
+  Corn: ["corn", "crop", "harvest", "weather", "usda"]
+  Coffee: ["coffee", "brazil", "frost", "weather", "supply"]
+  HeatingOil: ["heating oil", "refinery", "distillate", "winter"]

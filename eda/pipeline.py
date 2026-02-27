@@ -6,12 +6,14 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 import re
+from sklearn.decomposition import PCA
 
-# from src.data.loader import load_auronum_series
 from src.features.price_features import (
     compute_log_returns,
     compute_rolling_volatility,
     add_lag_features,
+    add_forward_return,
+    add_volatility_regime
 )
 from src.data.news_loader import load_news_json
 from src.features.news_features import build_daily_news_features
@@ -164,92 +166,203 @@ def run_pipeline(config: dict):
         df_price = compute_log_returns(df_price)
         df_price = compute_rolling_volatility(df_price)
         df_price = add_lag_features(df_price, "log_return", 3)
+        df_price = add_forward_return(df_price, horizon=5)
+        df_price = add_volatility_regime(df_price)
 
         # --- Merge macro (CRITICAL FIX)
         df_price = df_price.join(df_macro, how="left")
         df_price = df_price.ffill()
 
-        # --- Align with news
-        df_model = align_price_and_news(df_price, df_news)
-        df_model = df_model.replace([np.inf, -np.inf], np.nan)
-        df_model = df_model.dropna()
+        asset_kw = config.get("asset_keywords", {}).get(asset, [])
 
-        if len(df_model) < 200:
-            logger.info(f"{asset}: Not enough overlapping data.")
-            continue
+        if asset_kw:
+            pattern_asset = re.compile("|".join(asset_kw), re.IGNORECASE)
 
-        # ---------------------------
-        # Identify Embeddings
-        # ---------------------------
+            df_asset_news_raw = df_news_raw[
+                df_news_raw["headline"].str.contains(pattern_asset, na=False)
+            ].copy()
 
-        embedding_cols = [
-            c for c in df_model.columns if c.startswith("emb_")
-        ]
+            logger.info(f"{asset}: Asset-specific headlines = {len(df_asset_news_raw)}")
 
-        if not embedding_cols:
-            logger.warning(f"{asset}: No embedding columns found.")
-            continue
-
-        # Create aggregate embedding signal
-        df_model["emb_mean"] = df_model[embedding_cols].mean(axis=1)
-
-        # ---------------------------
-        # Identify Macro Features
-        # ---------------------------
-
-        macro_cols = [
-            c for c in df_model.columns
-            if c in df_macro.columns
-        ]
-
-        if not macro_cols:
-            logger.warning(f"{asset}: No macro columns found. Skipping macro model.")
         else:
-            res_macro = trainer(df_model, feature_cols=macro_cols)
-            log_result("Macro", res_macro, asset)
+            df_asset_news_raw = df_news_raw.copy()
 
-        # ---------------------------
-        # Add Interaction Terms
-        # ---------------------------
+        # Structured features
+        df_asset_structured = build_daily_news_features(df_asset_news_raw)
 
-        interaction_cols = []
-
-        for macro in macro_cols:
-            col_name = f"emb_mean_x_{macro}"
-            df_model[col_name] = df_model["emb_mean"] * df_model[macro]
-            interaction_cols.append(col_name)
-
-        # ---------------------------
-        # Feature Blocks
-        # ---------------------------
-
-        price_cols = config["price_features"]
-
-        news_features = embedding_cols
-        macro_features = macro_cols
-        all_features = (
-            price_cols
-            + macro_cols
-            + embedding_cols
-            + interaction_cols
+        # Embeddings
+        headline_emb_asset = embedder.embed_headlines(df_asset_news_raw)
+        daily_emb_asset = embedder.aggregate_daily(
+            df_asset_news_raw,
+            headline_emb_asset,
         )
 
-        # ---------------------------
-        # Experiments
-        # ---------------------------
+        daily_emb_asset.columns = [
+            f"emb_{i}" for i in range(daily_emb_asset.shape[1])
+        ]
 
-        res_price = trainer(df_model, feature_cols=price_cols)
-        res_macro = trainer(df_model, feature_cols=macro_cols)
-        res_news = trainer(df_model, feature_cols=embedding_cols)
-        res_all = trainer(
-            df_model,
-            feature_cols=price_cols + macro_cols + embedding_cols
-        )
+        df_news_asset = df_asset_structured.join(
+            daily_emb_asset,
+            how="left"
+        ).fillna(0)
 
-        log_result("Price", res_price, asset)
-        log_result("Macro", res_macro, asset)
-        log_result("News", res_news, asset)
-        log_result("All", res_all, asset)
+        # --- Align with news
+        # df_model = align_price_and_news(df_price, df_news)
+        # --- Align with GLOBAL news (existing behaviour)
+        df_model_global = align_price_and_news(df_price, df_news)
+
+        # --- Align with ASSET-SPECIFIC news (new branch)
+        # df_model_asset  = align_price_and_news(df_price, df_asset_news)
+        # df_model_asset  = align_price_and_news(df_price, df_news_asset)
+        df_model_asset  = align_price_and_news(df_price, df_news_asset)
+
+
+        # df_model = df_model.replace([np.inf, -np.inf], np.nan)
+        # df_model = df_model.dropna()
+
+        logger.info(f"{asset}: Global daily news rows = {len(df_news)}")
+        logger.info(f"{asset}: Asset daily news rows = {len(df_news_asset)}")
+
+        for name, df_tmp in [("global", df_model_global), ("asset", df_model_asset)]:
+            df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
+            df_tmp.dropna(inplace=True)
+
+        for news_version, df_model in [
+            ("GlobalNews", df_model_global),
+            ("AssetNews", df_model_asset)
+        ]:
+            if len(df_model) < 200:
+                logger.info(f"{asset}: Not enough overlapping data.")
+                continue
+
+            # ---- High news intensity regime
+            if "article_count" in df_model.columns:
+                threshold = df_model["article_count"].quantile(0.75)
+                df_model = df_model[df_model["article_count"] > threshold]
+
+            # ---------------------------
+            # Identify Embeddings
+            # ---------------------------
+
+            embedding_cols = [
+                c for c in df_model.columns if c.startswith("emb_")
+            ]
+
+            if not embedding_cols:
+                logger.warning(f"{asset}: No embedding columns found.")
+                continue
+
+            # ---- PCA compression of embeddings
+            pca = PCA(n_components=10)
+
+            emb_pca = pd.DataFrame(
+                pca.fit_transform(df_model[embedding_cols]),
+                index=df_model.index,
+                columns=[f"emb_pca_{i}" for i in range(10)]
+            )
+
+            df_model = df_model.join(emb_pca)
+
+            embedding_cols = [f"emb_pca_{i}" for i in range(10)]
+
+            # Create aggregate embedding signal
+            df_model["emb_mean"] = df_model[embedding_cols].mean(axis=1)
+
+            # ---------------------------
+            # Identify Macro Features
+            # ---------------------------
+
+            macro_cols = [
+                c for c in df_model.columns
+                if c in df_macro.columns
+            ]
+
+            # ---------------------------
+            # Add Interaction Terms
+            # ---------------------------
+
+            interaction_cols = []
+
+            for macro in macro_cols:
+                col_name = f"emb_mean_x_{macro}"
+                df_model[col_name] = df_model["emb_mean"] * df_model[macro]
+                interaction_cols.append(col_name)
+
+            # ---------------------------
+            # Feature Blocks
+            # ---------------------------
+
+            price_cols = config["price_features"]
+
+            news_features = embedding_cols
+            macro_features = macro_cols
+            all_features = (
+                price_cols
+                + macro_cols
+                + embedding_cols
+                + interaction_cols
+            )
+
+            # ---------------------------
+            # Experiments
+            # ---------------------------
+
+            results = {}
+
+            # --- Price only
+            if price_cols:
+                res_price = trainer(df_model, feature_cols=price_cols)
+                # log_result("Price_5day", res_price, asset)
+                log_result(f"{news_version}_Price_5day", res_price, asset)
+                results["Price_5day"] = res_price
+
+            # --- Macro only (already computed above but ensure consistent block)
+            if macro_features:
+                res_macro = trainer(df_model, feature_cols=macro_features)
+                log_result("Macro", res_macro, asset)
+                results["Macro"] = res_macro
+
+            # --- News only
+            if news_features:
+                res_news = trainer(df_model, feature_cols=news_features)
+                log_result("News_5day_HighAttention", res_news, asset)
+                results["News_5day_HighAttention"] = res_news
+
+            # --- Price + Macro
+            if price_cols and macro_features:
+                res_price_macro = trainer(
+                    df_model,
+                    feature_cols=price_cols + macro_features
+                )
+                log_result("Price+Macro", res_price_macro, asset)
+                results["Price+Macro"] = res_price_macro
+
+            # --- Price + News
+            if price_cols and news_features:
+                res_price_news = trainer(
+                    df_model,
+                    feature_cols=price_cols + news_features
+                )
+                log_result("Price+News", res_price_news, asset)
+                results["Price+News"] = res_price_news
+
+            # --- Macro + News
+            if macro_features and news_features:
+                res_macro_news = trainer(
+                    df_model,
+                    feature_cols=macro_features + news_features
+                )
+                log_result("Macro+News", res_macro_news, asset)
+                results["Macro+News"] = res_macro_news
+
+            # --- All features (including interactions)
+            if all_features:
+                res_all = trainer(
+                    df_model,
+                    feature_cols=all_features
+                )
+                log_result("All", res_all, asset)
+                results["All"] = res_all
 
     logger.info("=== PIPELINE COMPLETE ===")
 
