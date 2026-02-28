@@ -22,6 +22,7 @@ from src.models.registry import get_model_trainer
 from src.models.baseline_regression import directional_accuracy
 from src.features.embeddings import NewsEmbedder
 from src.data.macro_loader import load_macro_features
+from src.models.ridge import train_regime_specific
 
 
 logger = logging.getLogger(__name__)
@@ -363,6 +364,17 @@ def run_pipeline(config: dict):
                 )
                 log_result("All", res_all, asset)
                 results["All"] = res_all
+            
+            if "vol_regime_high" in df_model.columns:
+                res_regime = train_regime_specific(
+                    df_model,
+                    feature_cols=all_features + ["vol_regime_high"],
+                    alpha=config.get("ridge_alpha", 1.0)
+                )
+
+                logger.info(
+                    f"{asset} Regime-Specific DA: {res_regime['mean_fold_da']:.4f}"
+                )
 
     logger.info("=== PIPELINE COMPLETE ===")
 
@@ -418,3 +430,50 @@ def persist_outputs(results, config):
 
     return output_dir
 
+
+def run_regime_specific_model(
+    X_train, y_train, regimes_train,
+    X_test, y_test, regimes_test,
+    model_class
+):
+    """
+    Trains separate models for high-vol and low-vol regimes.
+    Returns:
+        high_da, low_da
+    """
+
+    # Split training data
+    X_train_high = X_train[regimes_train == 1]
+    y_train_high = y_train[regimes_train == 1]
+
+    X_train_low = X_train[regimes_train == 0]
+    y_train_low = y_train[regimes_train == 0]
+
+    # Initialize models
+    model_high = model_class()
+    model_low = model_class()
+
+    high_da = None
+    low_da = None
+
+    # Train + test high regime
+    if len(X_train_high) > 5:
+        model_high.fit(X_train_high, y_train_high)
+        X_test_high = X_test[regimes_test == 1]
+        y_test_high = y_test[regimes_test == 1]
+
+        if len(X_test_high) > 0:
+            preds_high = model_high.predict(X_test_high)
+            high_da = (preds_high == y_test_high).mean()
+
+    # Train + test low regime
+    if len(X_train_low) > 5:
+        model_low.fit(X_train_low, y_train_low)
+        X_test_low = X_test[regimes_test == 0]
+        y_test_low = y_test[regimes_test == 0]
+
+        if len(X_test_low) > 0:
+            preds_low = model_low.predict(X_test_low)
+            low_da = (preds_low == y_test_low).mean()
+
+    return high_da, low_da

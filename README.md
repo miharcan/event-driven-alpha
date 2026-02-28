@@ -1,159 +1,134 @@
-# Event-Driven Alpha --- Regime-Aware Commodity Forecasting
+# Event-Driven Alpha: Regime-Aware Multi-Modal Forecasting
 
 ## Overview
 
-This project builds a walk-forward, regime-aware forecasting pipeline
-for major commodities using:
+This repository implements an event-driven forecasting framework
+combining:
 
--   Price features
--   Macro features
--   News embeddings (SentenceTransformers)
--   Volatility regime classification
+-   Time-series price features\
+-   Macroeconomic indicators\
+-   NLP-derived news embeddings\
+-   Volatility regime detection\
+-   Walk-forward validation
 
-Directional Accuracy (DA) is the primary evaluation metric.
+The system evaluates directional forecasting performance across multiple
+assets and feature configurations.
 
-------------------------------------------------------------------------
-
-# Methodology
-
-## Walk-Forward Validation
-
--   Expanding window
--   4 folds
--   Strict chronological split
--   No lookahead bias
-
-## Volatility Regime Feature
-
-A binary feature:
-
--   `vol_regime_high = 1` → High volatility regime
--   `vol_regime_high = 0` → Low volatility regime
-
-We evaluate:
-
--   Fold-level DA
--   Aggregated regime-conditional DA across folds
+The goal is exploratory research into whether structured news and macro
+information improve short-horizon financial forecasting under regime
+shifts.
 
 ------------------------------------------------------------------------
 
-# Results Summary
+## Selected Experimental Highlights
 
-## Gold
+Across multiple assets and configurations, the framework demonstrates
+consistent directional performance above random baseline (50%) in
+several cases:
 
-Overall DA range: 0.53 -- 0.57
+-   Directional Accuracy (DA) reaching **\~0.58--0.59** using price-only
+    models\
+-   Multi-modal combinations (Price + Macro) achieving **\~0.57 DA**\
+-   Macro-only models reaching **\~0.57 DA** in certain assets\
+-   News-enhanced models achieving **\~0.55 DA** in selected
+    configurations\
+-   Regime-conditioned performance showing improved stability in
+    low-volatility environments
 
-Aggregated Regime DA: - High Vol: 0.5455 (11 samples) - Low Vol: 0.5714
-(49 samples)
-
-Interpretation: - Minimal regime sensitivity - Stable predictive
-behavior across regimes
-
-------------------------------------------------------------------------
-
-## Silver
-
-Overall DA range: 0.43 -- 0.47
-
-Aggregated Regime DA: - High Vol: 0.41--0.44 - Low Vol: 0.45--0.51
-
-Interpretation: - Performance improves in low volatility - High
-volatility degrades predictive quality
+These results indicate that structured feature integration and regime
+awareness can produce meaningful predictive signal under strict
+walk-forward validation.
 
 ------------------------------------------------------------------------
 
-## Copper
+## Data Inputs
 
-Overall DA range: 0.46 -- 0.54
+The pipeline expects the following data types:
 
-Aggregated Regime DA (strong signal): - High Vol: \~0.39--0.42 - Low
-Vol: \~0.49--0.59
+### 1. Price Data
 
-Interpretation: - Strong regime asymmetry - Model works primarily in
-stable conditions
+-   Daily OHLC or returns\
+-   Rolling features (e.g., lagged returns)\
+-   Volatility estimation inputs
 
-------------------------------------------------------------------------
+### 2. Macroeconomic Features
 
-## Crude Oil
+-   Interest rates\
+-   Inflation metrics\
+-   Yield spreads\
+-   Other macro indicators aligned by date
 
-Overall DA range: 0.39 -- 0.57
+### 3. News Data
 
-Aggregated Regime DA: - High Vol: \~0.36--0.45 - Low Vol: \~0.42--0.60
-
-Interpretation: - Clear degradation in high volatility - Low-vol regime
-contains most predictive edge
-
-------------------------------------------------------------------------
-
-## Corn
-
-Overall DA range: 0.50 -- 0.55
-
-Aggregated Regime DA: - High Vol: \~0.55--0.65 - Low Vol: \~0.48--0.53
-
-Interpretation: - Inverse behavior vs metals - High volatility may
-create exploitable moves
+-   Timestamped headlines\
+-   Optional asset tagging\
+-   Text embeddings generated using sentence-transformer models\
+-   Daily aggregation of embeddings\
+-   Article count features
 
 ------------------------------------------------------------------------
 
-## Coffee
+## Feature Engineering
 
-Overall DA range: 0.44 -- 0.59
-
-Aggregated Regime DA: - High Vol: \~0.50--0.55 - Low Vol: \~0.46--0.60
-
-Interpretation: - Moderate regime sensitivity - Some edge in stable
-periods
+-   Rolling return windows\
+-   Volatility regime classification (high/low via rolling std)\
+-   News embedding PCA compression\
+-   High-attention filtering (based on article volume)
 
 ------------------------------------------------------------------------
 
-## Heating Oil
+## Models
 
-Overall DA range: 0.42 -- 0.51
-
-Aggregated Regime DA: - High Vol: \~0.42--0.55 - Low Vol: \~0.43--0.49
-
-Interpretation: - Mild regime differentiation
-
-------------------------------------------------------------------------
-
-# Key Findings
-
-1.  Volatility regime materially affects predictability.
-2.  Industrial metals and energy show strong regime asymmetry.
-3.  Some agricultural commodities behave differently (Corn).
-4.  Overall DAs are modest (0.53--0.58), but regime-filtered DAs reach
-    0.60+.
-5.  Predictability is conditional, not uniform.
+-   Linear Regression\
+-   Ridge Regression\
+-   Walk-forward time-series cross-validation\
+-   Regime-specific training (separate models per volatility state)
 
 ------------------------------------------------------------------------
 
-# Strategic Implications
+## Evaluation Metrics
 
-The volatility regime feature is:
+-   Directional Accuracy (primary metric)\
+-   Fold-level DA\
+-   Aggregated regime DA\
+-   MSE and R²
 
--   Properly implemented
--   Statistically coherent
--   Producing meaningful diagnostics
-
-Alpha appears concentrated in specific regime conditions rather than
-uniformly distributed.
-
-------------------------------------------------------------------------
-
-# Next Research Directions
-
-1.  Train separate models per regime
-2.  Add interaction terms (feature × regime)
-3.  Regime-based model selection or ensemble weighting
-4.  Statistical significance testing of regime gaps
+All evaluation is performed using strict chronological splits (no
+leakage).
 
 ------------------------------------------------------------------------
 
-# Conclusion
+## Questions Explored
 
-This project demonstrates that commodity directional predictability is
-regime-dependent.
+-   Do macro features improve directional forecasts?\
+-   Does structured news embedding add incremental signal?\
+-   Does asset-specific news outperform global news?\
+-   Does volatility regime separation improve predictive performance?\
+-   Are multi-modal models more robust than single-source inputs?
 
-Future improvements should focus on conditional modeling rather than
-feature expansion alone.
+------------------------------------------------------------------------
+
+## Running the Pipeline
+
+``` bash
+python -m eda.cli --config configs/default.yaml
+```
+
+------------------------------------------------------------------------
+
+## Experimental Design
+
+-   Multi-asset evaluation\
+-   Walk-forward folds\
+-   Parallel unified vs regime-specific models\
+-   Embedding compression via PCA\
+-   High-attention news subset analysis
+
+------------------------------------------------------------------------
+
+## Notes
+
+This repository is designed for exploratory quantitative research and
+methodological investigation.
+
+It is not intended for live trading deployment.

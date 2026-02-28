@@ -73,25 +73,6 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
 
         preds = model.predict(X_test)
 
-        # ---- Regime-conditional DA
-        # if "vol_regime_high" in X_test.columns:
-
-        #     high_mask = X_test["vol_regime_high"] == 1
-        #     low_mask = X_test["vol_regime_high"] == 0
-
-        #     if high_mask.sum() > 5:
-        #         da_high = directional_accuracy(
-        #             y_test[high_mask],
-        #             preds[high_mask]
-        #         )
-        #         print(f"Fold {i+1} High-Vol DA: {da_high:.4f}")
-
-        #     if low_mask.sum() > 5:
-        #         da_low = directional_accuracy(
-        #             y_test[low_mask],
-        #             preds[low_mask]
-        #         )
-        #         print(f"Fold {i+1} Low-Vol DA: {da_low:.4f}")
         if "vol_regime_high" in X_test.columns:
 
             high_mask = X_test["vol_regime_high"] == 1
@@ -141,4 +122,91 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
         "test_index": all_test_indices,
         "fold_das": fold_das,
         "mean_fold_da": np.mean(fold_das),
+    }
+
+
+def train_regime_specific(df, feature_cols, alpha=1.0, target_col="fwd_return"):
+
+    if "vol_regime_high" not in df.columns:
+        raise ValueError("vol_regime_high must exist in df")
+
+    X = df[feature_cols].copy()
+    y = df[target_col]
+    regimes = df["vol_regime_high"]
+
+    # Remove regime from feature matrix if included
+    if "vol_regime_high" in X.columns:
+        X = X.drop(columns=["vol_regime_high"])
+
+    n = len(df)
+    folds = 4
+    initial_train_size = int(n * 0.6)
+    fold_size = int((n - initial_train_size) / folds)
+
+    if fold_size <= 0:
+        raise ValueError("Not enough data for walk-forward split.")
+
+    all_predictions = []
+    all_y_test = []
+    fold_das = []
+
+    for i in range(folds):
+
+        train_end = initial_train_size + i * fold_size
+        test_end = train_end + fold_size
+
+        X_train = X.iloc[:train_end]
+        y_train = y.iloc[:train_end]
+        regime_train = regimes.iloc[:train_end]
+
+        X_test = X.iloc[train_end:test_end]
+        y_test = y.iloc[train_end:test_end]
+        regime_test = regimes.iloc[train_end:test_end]
+
+        # ---- Split train by regime
+        high_mask_train = regime_train == 1
+        low_mask_train = regime_train == 0
+
+        model_high = Ridge(alpha=alpha)
+        model_low = Ridge(alpha=alpha)
+
+        if high_mask_train.sum() > 5:
+            model_high.fit(
+                X_train[high_mask_train],
+                y_train[high_mask_train]
+            )
+
+        if low_mask_train.sum() > 5:
+            model_low.fit(
+                X_train[low_mask_train],
+                y_train[low_mask_train]
+            )
+
+        # ---- Vectorized prediction
+        preds = np.zeros(len(X_test))
+
+        high_mask_test = regime_test == 1
+        low_mask_test = regime_test == 0
+
+        if high_mask_test.sum() > 0 and high_mask_train.sum() > 5:
+            preds[high_mask_test] = model_high.predict(
+                X_test[high_mask_test]
+            )
+
+        if low_mask_test.sum() > 0 and low_mask_train.sum() > 5:
+            preds[low_mask_test] = model_low.predict(
+                X_test[low_mask_test]
+            )
+
+        all_predictions.extend(preds)
+        all_y_test.extend(y_test)
+
+        fold_da = directional_accuracy(y_test, preds)
+        fold_das.append(fold_da)
+
+    return {
+        "predictions": np.array(all_predictions),
+        "y_test": np.array(all_y_test),
+        "mean_fold_da": np.mean(fold_das),
+        "fold_das": fold_das
     }
