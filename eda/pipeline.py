@@ -25,6 +25,7 @@ from src.models.ridge import train_regime_specific
 from src.models.baseline_regression import (
     train_baseline_regression,
     directional_accuracy,
+    run_regime_gated_model
 )
 
 
@@ -381,6 +382,29 @@ def run_pipeline(config: dict):
 
             logger.info(f"{asset} RegimeInteraction Delta vs All: {delta:+.4f}")
 
+            # res_all_gated = run_regime_gated_model(
+            #     df=df_model,
+            #     feature_cols=all_features,
+            #     config=config
+            # )
+
+            # logger.info(f"{asset} All + RegimeGated DA: {res_all_gated['mean_fold_da']:.4f}")
+            # logger.info(
+            #     f"{asset} RegimeGated Delta vs All: "
+            #     f"{res_all_gated['mean_fold_da'] - res_all['mean_fold_da']:+.4f}"
+            # )
+
+            res_gated = run_regime_gated_model(
+                df=df_model,
+                target_col="fwd_return",
+                feature_cols=all_features,
+                config=config,
+            )
+
+            logger.info(
+                f"{asset} All + RegimeGated DA: {res_gated['mean_fold_da']:.4f}"
+            )
+
         logger.info("=== PIPELINE COMPLETE ===")
 
 
@@ -486,28 +510,95 @@ def run_regime_specific_model(
 
 def run_all_with_regime_interaction(df, base_feature_cols, config):
     """
-    Unified model with regime interaction terms.
-    Keeps full sample size.
+    Unified model with continuous volatility interaction.
+    Computes volatility proxy from log returns to avoid missing column issues.
     """
 
     df_int = df.copy()
 
-    if "vol_regime_high" not in df_int.columns:
-        raise ValueError("vol_regime_high column required for regime interaction.")
+    if "log_return" not in df_int.columns:
+        raise ValueError("log_return column required for volatility interaction.")
+
+    # --- compute rolling volatility locally (safe)
+    vol = df_int["log_return"].rolling(10).std()
+
+    # fill early NaNs
+    # vol = vol.fillna(method="bfill")
+    vol = vol.bfill()
+
+    # normalize
+    vol_z = (vol - vol.mean()) / (vol.std() + 1e-8)
 
     interaction_cols = []
 
     for col in base_feature_cols:
         if col != "vol_regime_high":
-            new_col = f"{col}_x_regime"
-            df_int[new_col] = df_int[col] * df_int["vol_regime_high"]
+            new_col = f"{col}_x_vol"
+            df_int[new_col] = df_int[col] * vol_z
             interaction_cols.append(new_col)
 
     feature_cols_extended = base_feature_cols + interaction_cols
 
     return train_baseline_regression(
         df=df_int,
-        target_col="target",
+        target_col="fwd_return",  # target ??
         feature_cols=feature_cols_extended,
         config=config
     )
+
+
+def run_regime_gated_model_old(df, feature_cols, config):
+    from sklearn.linear_model import Ridge
+    from sklearn.model_selection import TimeSeriesSplit
+    import numpy as np
+
+    tscv = TimeSeriesSplit(n_splits=config["model"]["n_splits"])
+    fold_das = []
+
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(df)):
+
+        train_df = df.iloc[train_idx].copy()
+        test_df = df.iloc[test_idx].copy()
+
+        # Compute volatility using TRAIN only
+        vol_train = train_df["log_return"].rolling(10).std().bfill()
+        vol_thresh = vol_train.median()
+
+        train_df["high_vol"] = (vol_train > vol_thresh).astype(int)
+
+        # Split train by regime
+        train_high = train_df[train_df["high_vol"] == 1]
+        train_low = train_df[train_df["high_vol"] == 0]
+
+        # If one regime too small, fallback to normal model
+        if len(train_high) < 5 or len(train_low) < 5:
+            model = Ridge(alpha=config["model"]["ridge_alpha"])
+            model.fit(train_df[feature_cols], train_df["target"])
+            preds = model.predict(test_df[feature_cols])
+        else:
+            model_high = Ridge(alpha=config["model"]["ridge_alpha"])
+            model_low = Ridge(alpha=config["model"]["ridge_alpha"])
+
+            model_high.fit(train_high[feature_cols], train_high["target"])
+            model_low.fit(train_low[feature_cols], train_low["target"])
+
+            # Compute test regime using TRAIN threshold
+            vol_test = test_df["log_return"].rolling(10).std().bfill()
+            test_high = (vol_test > vol_thresh).astype(int)
+
+            preds = []
+            for i in range(len(test_df)):
+                row = test_df.iloc[[i]]
+                if test_high.iloc[i] == 1:
+                    pred = model_high.predict(row[feature_cols])[0]
+                else:
+                    pred = model_low.predict(row[feature_cols])[0]
+                preds.append(pred)
+
+        da = directional_accuracy(test_df["target"], preds)
+        fold_das.append(da)
+
+    return {
+        "mean_fold_da": np.mean(fold_das),
+        "fold_das": fold_das
+    }
