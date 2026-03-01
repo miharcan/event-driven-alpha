@@ -19,10 +19,13 @@ from src.data.news_loader import load_news_json
 from src.features.news_features import build_daily_news_features
 from src.data.alignment import align_price_and_news
 from src.models.registry import get_model_trainer
-from src.models.baseline_regression import directional_accuracy
 from src.features.embeddings import NewsEmbedder
 from src.data.macro_loader import load_macro_features
 from src.models.ridge import train_regime_specific
+from src.models.baseline_regression import (
+    train_baseline_regression,
+    directional_accuracy,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -207,19 +210,9 @@ def run_pipeline(config: dict):
             how="left"
         ).fillna(0)
 
-        # --- Align with news
-        # df_model = align_price_and_news(df_price, df_news)
-        # --- Align with GLOBAL news (existing behaviour)
         df_model_global = align_price_and_news(df_price, df_news)
 
-        # --- Align with ASSET-SPECIFIC news (new branch)
-        # df_model_asset  = align_price_and_news(df_price, df_asset_news)
-        # df_model_asset  = align_price_and_news(df_price, df_news_asset)
         df_model_asset  = align_price_and_news(df_price, df_news_asset)
-
-
-        # df_model = df_model.replace([np.inf, -np.inf], np.nan)
-        # df_model = df_model.dropna()
 
         logger.info(f"{asset}: Global daily news rows = {len(df_news)}")
         logger.info(f"{asset}: Asset daily news rows = {len(df_news_asset)}")
@@ -376,7 +369,19 @@ def run_pipeline(config: dict):
                     f"{asset} Regime-Specific DA: {res_regime['mean_fold_da']:.4f}"
                 )
 
-    logger.info("=== PIPELINE COMPLETE ===")
+            res_all_inter = run_all_with_regime_interaction(
+                df=df_model,
+                base_feature_cols=all_features,
+                config=config
+            )
+
+            logger.info(f"{asset} All + RegimeInteraction DA: {res_all_inter['mean_fold_da']:.4f}")
+
+            delta = res_all_inter["mean_fold_da"] - res_all["mean_fold_da"]
+
+            logger.info(f"{asset} RegimeInteraction Delta vs All: {delta:+.4f}")
+
+        logger.info("=== PIPELINE COMPLETE ===")
 
 
 # ---------------------------
@@ -477,3 +482,32 @@ def run_regime_specific_model(
             low_da = (preds_low == y_test_low).mean()
 
     return high_da, low_da
+
+
+def run_all_with_regime_interaction(df, base_feature_cols, config):
+    """
+    Unified model with regime interaction terms.
+    Keeps full sample size.
+    """
+
+    df_int = df.copy()
+
+    if "vol_regime_high" not in df_int.columns:
+        raise ValueError("vol_regime_high column required for regime interaction.")
+
+    interaction_cols = []
+
+    for col in base_feature_cols:
+        if col != "vol_regime_high":
+            new_col = f"{col}_x_regime"
+            df_int[new_col] = df_int[col] * df_int["vol_regime_high"]
+            interaction_cols.append(new_col)
+
+    feature_cols_extended = base_feature_cols + interaction_cols
+
+    return train_baseline_regression(
+        df=df_int,
+        target_col="target",
+        feature_cols=feature_cols_extended,
+        config=config
+    )

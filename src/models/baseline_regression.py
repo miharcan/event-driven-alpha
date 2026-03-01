@@ -56,7 +56,15 @@ def train_baseline_regression(
 
         if embedding_cols:
 
-            n_components = config.get("embedding_pca_components", 75)
+            max_components = min(
+                X_train[embedding_cols].shape[0],
+                X_train[embedding_cols].shape[1]
+            )
+
+            n_components = min(
+                config.get("embedding_pca_components", 75),
+                max_components
+            )
             pca = PCA(n_components=n_components)
 
             X_train_emb = pca.fit_transform(X_train[embedding_cols])
