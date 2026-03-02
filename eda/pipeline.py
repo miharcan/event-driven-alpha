@@ -80,7 +80,7 @@ def run_pipeline(config: dict):
         "Coffee": ("Date Coffee", "Value Coffee"),
     }
 
-    trainer = get_model_trainer(config["model_type"], config)
+    trainer = get_model_trainer(config["model"]["model_type"], config)
 
     # ---------------------------
     # 2. Load Price File (Raw)
@@ -243,11 +243,17 @@ def run_pipeline(config: dict):
                 datasets = [("Full", df_model)]
 
                 if "article_count" in df_model.columns:
-                    threshold = df_model["article_count"].quantile(0.75)
-                    df_filtered = df_model[df_model["article_count"] > threshold].copy()
 
-                    if len(df_filtered) > 200:
-                        datasets.append(("HighAttention", df_filtered))
+                    percentiles = [0.5, 0.6, 0.7, 0.8, 0.9]
+
+                    for q in percentiles:
+                        threshold = df_model["article_count"].quantile(q)
+
+                        df_filtered = df_model[df_model["article_count"] > threshold].copy()
+
+                        if len(df_filtered) > 100:
+                            label = f"Top{int(q*100)}"
+                            datasets.append((label, df_filtered))
 
                 # ---------------------------
                 # Dataset loop: Full vs HighAttention
@@ -344,6 +350,7 @@ def run_pipeline(config: dict):
                     if "vol_regime_high" in df_use.columns and all_features:
                         res_regime = train_regime_specific(
                             df_use,
+                            config,
                             feature_cols=all_features + ["vol_regime_high"],
                             alpha=config.get("ridge_alpha", 1.0)
                         )
@@ -378,11 +385,15 @@ def run_pipeline(config: dict):
                     best_row = tracker.best_for(asset, horizon)
                     logger.info(f"{asset} | H{horizon} | {news_version} | {dataset_name} | Best={best_row['model']} ({best_row['mean_da']:.4f})")
            
-    logger.info("=== PIPELINE COMPLETE ===")
-    tracker.save("outputs/results_full.csv")
-    tracker.save_summary("outputs/results_summary.csv")
+    model_type = config["model"]["model_type"]
 
-    logger.info("Results saved to results_full.csv and results_summary.csv")
+    full_path = f"outputs/results_{model_type}_full.csv"
+    summary_path = f"outputs/results_{model_type}_summary.csv"
+
+    tracker.save(full_path)
+    tracker.save_summary(summary_path)
+
+    logger.info(f"Results saved to {full_path} and {summary_path}")
 
 
 # ---------------------------

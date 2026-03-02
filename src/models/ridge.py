@@ -6,7 +6,7 @@ import numpy as np
 from src.models.baseline_regression import directional_accuracy
 
 
-def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
+def train(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
 
     all_test_indices = []
 
@@ -16,7 +16,8 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
     n = len(df)
 
     # ---- Walk-forward setup
-    folds = 4
+    # folds = 4
+    folds = config["model"]["n_splits"]
     initial_train_size = int(n * 0.6)
     fold_size = int((n - initial_train_size) / folds)
 
@@ -39,12 +40,12 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
         train_end = initial_train_size + i * fold_size
         test_end = train_end + fold_size
 
-        print(
-            f"Fold {i+1}: "
-            f"Train end {df.index[train_end]} | "
-            f"Test start {df.index[train_end]} | "
-            f"Test end {df.index[test_end-1]}"
-        )
+        # print(
+        #     f"Fold {i+1}: "
+        #     f"Train end {df.index[train_end]} | "
+        #     f"Test start {df.index[train_end]} | "
+        #     f"Test end {df.index[test_end-1]}"
+        # )
 
         X_train = X.iloc[:train_end].copy()
         y_train = y.iloc[:train_end]
@@ -60,10 +61,10 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
             high_count = regime_counts.get(1, 0)
             low_count = regime_counts.get(0, 0)
 
-            print(
-                f"Fold {i+1} Regime Distribution | "
-                f"High Vol: {high_count} | Low Vol: {low_count}"
-            )
+            # print(
+            #     f"Fold {i+1} Regime Distribution | "
+            #     f"High Vol: {high_count} | Low Vol: {low_count}"
+            # )
 
         all_test_indices.extend(X_test.index)
 
@@ -94,29 +95,28 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
         fold_da = directional_accuracy(y_test, preds)
         fold_das.append(fold_da)
 
-    
     # ---- Aggregated Regime DA
     if len(all_high_y) > 10:
         high_da = directional_accuracy(
             np.array(all_high_y),
             np.array(all_high_preds)
         )
-        print(f"Aggregated High-Vol DA: {high_da:.4f} | Samples: {len(all_high_y)}")
+        # print(f"Aggregated High-Vol DA: {high_da:.4f} | Samples: {len(all_high_y)}")
 
     if len(all_low_y) > 10:
         low_da = directional_accuracy(
             np.array(all_low_y),
             np.array(all_low_preds)
         )
-        print(f"Aggregated Low-Vol DA: {low_da:.4f} | Samples: {len(all_low_y)}")
+        # print(f"Aggregated Low-Vol DA: {low_da:.4f} | Samples: {len(all_low_y)}")
     
-    mse = mean_squared_error(all_y_test, all_predictions)
-    r2 = r2_score(all_y_test, all_predictions)
+    # mse = mean_squared_error(all_y_test, all_predictions)
+    # r2 = r2_score(all_y_test, all_predictions)
 
     return {
-        "model": model,
-        "mse": mse,
-        "r2": r2,
+        # "model": model,
+        # "mse": mse,
+        # "r2": r2,
         "y_test": np.array(all_y_test),
         "predictions": np.array(all_predictions),
         "test_index": all_test_indices,
@@ -125,7 +125,7 @@ def train(df, feature_cols, alpha=1.0, target_col="fwd_return"):
     }
 
 
-def train_regime_specific(df, feature_cols, alpha=1.0, target_col="fwd_return"):
+def train_regime_specific(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
 
     if "vol_regime_high" not in df.columns:
         raise ValueError("vol_regime_high must exist in df")
@@ -139,7 +139,8 @@ def train_regime_specific(df, feature_cols, alpha=1.0, target_col="fwd_return"):
         X = X.drop(columns=["vol_regime_high"])
 
     n = len(df)
-    folds = 4
+    # folds = 4
+    folds = config["model"]["n_splits"]
     initial_train_size = int(n * 0.6)
     fold_size = int((n - initial_train_size) / folds)
 
