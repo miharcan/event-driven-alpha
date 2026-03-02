@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import re
 from sklearn.decomposition import PCA
+from collections import defaultdict
 
 from src.features.price_features import (
     compute_log_returns,
@@ -150,7 +151,7 @@ def run_pipeline(config: dict):
     # ---------------------------
     # 5. Multi-Asset Loop
     # ---------------------------
-
+    tracker = ResultTracker()
     for asset, (date_col, price_col) in asset_map.items():
 
         logger.info(f"\n--- Running {asset} ---")
@@ -171,233 +172,217 @@ def run_pipeline(config: dict):
         df_price = compute_log_returns(df_price)
         df_price = compute_rolling_volatility(df_price)
         df_price = add_lag_features(df_price, "log_return", 3)
-        df_price = add_forward_return(df_price, horizon=5)
-        df_price = add_volatility_regime(df_price)
+        
+        horizons = config.get("horizons", [5])
+        for horizon in horizons:
 
-        # --- Merge macro (CRITICAL FIX)
-        df_price = df_price.join(df_macro, how="left")
-        df_price = df_price.ffill()
+            logger.info(f"\n===== Testing Horizon: {horizon} days =====")
 
-        asset_kw = config.get("asset_keywords", {}).get(asset, [])
+            df_price_h = df_price.copy()
 
-        if asset_kw:
-            pattern_asset = re.compile("|".join(asset_kw), re.IGNORECASE)
+            df_price_h = add_forward_return(df_price_h, horizon=horizon)
+            df_price_h = add_volatility_regime(df_price_h)
 
-            df_asset_news_raw = df_news_raw[
-                df_news_raw["headline"].str.contains(pattern_asset, na=False)
-            ].copy()
 
-            logger.info(f"{asset}: Asset-specific headlines = {len(df_asset_news_raw)}")
+            # --- Merge macro (CRITICAL FIX)
+            df_price_h = df_price_h.join(df_macro, how="left")
+            df_price_h = df_price_h.ffill()
 
-        else:
-            df_asset_news_raw = df_news_raw.copy()
+            asset_kw = config.get("asset_keywords", {}).get(asset, [])
 
-        # Structured features
-        df_asset_structured = build_daily_news_features(df_asset_news_raw)
+            if asset_kw:
+                pattern_asset = re.compile("|".join(asset_kw), re.IGNORECASE)
 
-        # Embeddings
-        headline_emb_asset = embedder.embed_headlines(df_asset_news_raw)
-        daily_emb_asset = embedder.aggregate_daily(
-            df_asset_news_raw,
-            headline_emb_asset,
-        )
+                df_asset_news_raw = df_news_raw[
+                    df_news_raw["headline"].str.contains(pattern_asset, na=False)
+                ].copy()
 
-        daily_emb_asset.columns = [
-            f"emb_{i}" for i in range(daily_emb_asset.shape[1])
-        ]
+                logger.info(f"{asset}: Asset-specific headlines = {len(df_asset_news_raw)}")
 
-        df_news_asset = df_asset_structured.join(
-            daily_emb_asset,
-            how="left"
-        ).fillna(0)
+            else:
+                df_asset_news_raw = df_news_raw.copy()
 
-        df_model_global = align_price_and_news(df_price, df_news)
+            # Structured features
+            df_asset_structured = build_daily_news_features(df_asset_news_raw)
 
-        df_model_asset = align_price_and_news(df_price, df_news_asset)
+            # Embeddings
+            headline_emb_asset = embedder.embed_headlines(df_asset_news_raw)
+            daily_emb_asset = embedder.aggregate_daily(
+                df_asset_news_raw,
+                headline_emb_asset,
+            )
 
-        logger.info(f"{asset}: Global daily news rows = {len(df_news)}")
-        logger.info(f"{asset}: Asset daily news rows = {len(df_news_asset)}")
-
-        for name, df_tmp in [("global", df_model_global), ("asset", df_model_asset)]:
-            df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
-            df_tmp.dropna(inplace=True)
-
-        for news_version, df_model in [
-            ("GlobalNews", df_model_global),
-            ("AssetNews", df_model_asset)
-        ]:
-            if len(df_model) < 200:
-                logger.info(f"{asset}: Not enough overlapping data.")
-                continue
-
-            # ---- High news intensity regime
-            if "article_count" in df_model.columns:
-                threshold = df_model["article_count"].quantile(0.75)
-                df_model = df_model[df_model["article_count"] > threshold]
-
-            # ---------------------------
-            # Identify Embeddings
-            # ---------------------------
-
-            embedding_cols = [
-                c for c in df_model.columns if c.startswith("emb_")
+            daily_emb_asset.columns = [
+                f"emb_{i}" for i in range(daily_emb_asset.shape[1])
             ]
 
-            if not embedding_cols:
-                logger.warning(f"{asset}: No embedding columns found.")
-                continue
+            df_news_asset = df_asset_structured.join(
+                daily_emb_asset,
+                how="left"
+            ).fillna(0)
 
-            # ---- PCA compression of embeddings
-            pca = PCA(n_components=10)
+            df_model_global = align_price_and_news(df_price_h, df_news)
 
-            emb_pca = pd.DataFrame(
-                pca.fit_transform(df_model[embedding_cols]),
-                index=df_model.index,
-                columns=[f"emb_pca_{i}" for i in range(10)]
-            )
+            df_model_asset = align_price_and_news(df_price_h, df_news_asset)
 
-            df_model = df_model.join(emb_pca)
+            logger.info(f"{asset}: Global daily news rows = {len(df_news)}")
+            logger.info(f"{asset}: Asset daily news rows = {len(df_news_asset)}")
 
-            embedding_cols = [f"emb_pca_{i}" for i in range(10)]
+            for name, df_tmp in [("global", df_model_global), ("asset", df_model_asset)]:
+                df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
+                df_tmp.dropna(inplace=True)
 
-            # Create aggregate embedding signal
-            df_model["emb_mean"] = df_model[embedding_cols].mean(axis=1)
+            for news_version, df_model in [
+                ("GlobalNews", df_model_global),
+                ("AssetNews", df_model_asset)
+            ]:
+                if len(df_model) < 200:
+                    logger.info(f"{asset}: Not enough overlapping data.")
+                    continue
 
-            # ---------------------------
-            # Identify Macro Features
-            # ---------------------------
+                datasets = [("Full", df_model)]
 
-            macro_cols = [
-                c for c in df_model.columns
-                if c in df_macro.columns
-            ]
+                if "article_count" in df_model.columns:
+                    threshold = df_model["article_count"].quantile(0.75)
+                    df_filtered = df_model[df_model["article_count"] > threshold].copy()
 
-            # ---------------------------
-            # Add Interaction Terms
-            # ---------------------------
+                    if len(df_filtered) > 200:
+                        datasets.append(("HighAttention", df_filtered))
 
-            interaction_cols = []
+                # ---------------------------
+                # Dataset loop: Full vs HighAttention
+                # ---------------------------
+                for dataset_name, df_use in datasets:
 
-            for macro in macro_cols:
-                col_name = f"emb_mean_x_{macro}"
-                df_model[col_name] = df_model["emb_mean"] * df_model[macro]
-                interaction_cols.append(col_name)
+                    df_use = df_use.copy()
 
-            # ---------------------------
-            # Feature Blocks
-            # ---------------------------
+                    # ---------------------------
+                    # Identify Embeddings
+                    # ---------------------------
+                    raw_embedding_cols = [c for c in df_use.columns if c.startswith("emb_")]
+                    if not raw_embedding_cols:
+                        logger.warning(f"{asset} | H{horizon} | {news_version} | {dataset_name}: No raw embedding cols.")
+                        continue
 
-            price_cols = config["price_features"]
+                    # PCA -> emb_pca_0..9
+                    pca = PCA(n_components=10)
+                    emb_pca = pd.DataFrame(
+                        pca.fit_transform(df_use[raw_embedding_cols]),
+                        index=df_use.index,
+                        columns=[f"emb_pca_{i}" for i in range(10)]
+                    )
+                    df_use = df_use.join(emb_pca)
 
-            news_features = embedding_cols
-            macro_features = macro_cols
-            all_features = (
-                price_cols
-                + macro_cols
-                + embedding_cols
-                + interaction_cols
-            )
+                    pca_cols = [f"emb_pca_{i}" for i in range(10)]
+                    df_use["emb_mean"] = df_use[pca_cols].mean(axis=1)
 
-            # ---------------------------
-            # Experiments
-            # ---------------------------
+                    # ---------------------------
+                    # Identify Macro Features (from df_macro columns)
+                    # ---------------------------
+                    macro_cols = [c for c in df_use.columns if c in df_macro.columns]
+                    
 
-            results = {}
+                    # ---------------------------
+                    # Interaction Terms (emb_mean x macro)
+                    # ---------------------------
+                    interaction_cols = []
+                    for macro in macro_cols:
+                        col_name = f"emb_mean_x_{macro}"
+                        df_use[col_name] = df_use["emb_mean"] * df_use[macro]
+                        interaction_cols.append(col_name)
 
-            # --- Price only
-            if price_cols:
-                res_price = trainer(df_model, feature_cols=price_cols)
-                # log_result("Price_5day", res_price, asset)
-                log_result(f"{news_version}_Price_5day", res_price, asset)
-                results["Price_5day"] = res_price
+                    # ---------------------------
+                    # Feature Blocks
+                    # ---------------------------
+                    price_cols = config["price_features"]
 
-            # --- Macro only (already computed above but ensure consistent block)
-            if macro_features:
-                res_macro = trainer(df_model, feature_cols=macro_features)
-                log_result("Macro", res_macro, asset)
-                results["Macro"] = res_macro
+                    news_features = pca_cols
+                    macro_features = macro_cols
+                    all_features = price_cols + macro_cols + pca_cols + interaction_cols
 
-            # --- News only
-            if news_features:
-                res_news = trainer(df_model, feature_cols=news_features)
-                log_result("News_5day_HighAttention", res_news, asset)
-                results["News_5day_HighAttention"] = res_news
+                    # ---------------------------
+                    # Experiments
+                    # ---------------------------
+                    results = {}
 
-            # --- Price + Macro
-            if price_cols and macro_features:
-                res_price_macro = trainer(
-                    df_model,
-                    feature_cols=price_cols + macro_features
-                )
-                log_result("Price+Macro", res_price_macro, asset)
-                results["Price+Macro"] = res_price_macro
+                    if price_cols:
+                        res_price = normalize_result(trainer(df_use, feature_cols=price_cols))
+                        tracker.add(asset, horizon, f"{dataset_name}_Price", res_price["mean_da"], res_price["fold_das"])
+                        results["Price"] = res_price
 
-            # --- Price + News
-            if price_cols and news_features:
-                res_price_news = trainer(
-                    df_model,
-                    feature_cols=price_cols + news_features
-                )
-                log_result("Price+News", res_price_news, asset)
-                results["Price+News"] = res_price_news
+                    if macro_features:
+                        res_macro = normalize_result(trainer(df_use, feature_cols=macro_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_Macro", res_macro["mean_da"], res_macro["fold_das"])
+                        results["Macro"] = res_macro
 
-            # --- Macro + News
-            if macro_features and news_features:
-                res_macro_news = trainer(
-                    df_model,
-                    feature_cols=macro_features + news_features
-                )
-                log_result("Macro+News", res_macro_news, asset)
-                results["Macro+News"] = res_macro_news
+                    if news_features:
+                        res_news = normalize_result(trainer(df_use, feature_cols=news_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_News", res_news["mean_da"], res_news["fold_das"])
+                        results["News"] = res_news
 
-            # --- All features (including interactions)
-            if all_features:
-                res_all = trainer(
-                    df_model,
-                    feature_cols=all_features
-                )
-                log_result("All", res_all, asset)
-                results["All"] = res_all
-            
-            if "vol_regime_high" in df_model.columns:
-                res_regime = train_regime_specific(
-                    df_model,
-                    feature_cols=all_features + ["vol_regime_high"],
-                    alpha=config.get("ridge_alpha", 1.0)
-                )
+                    if price_cols and macro_features:
+                        res_price_macro = normalize_result(trainer(df_use, feature_cols=price_cols + macro_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_Price+Macro", res_price_macro["mean_da"], res_price_macro["fold_das"])
+                        results["Price+Macro"] = res_price_macro
 
-                logger.info(
-                    f"{asset} Regime-Specific DA: {res_regime['mean_fold_da']:.4f}"
-                )
+                    if price_cols and news_features:
+                        res_price_news = normalize_result(trainer(df_use, feature_cols=price_cols + news_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_Price+News", res_price_news["mean_da"], res_price_news["fold_das"])
+                        results["Price+News"] = res_price_news
 
-            res_all_inter = run_all_with_regime_interaction(
-                df=df_model,
-                base_feature_cols=all_features,
-                config=config
-            )
+                    if macro_features and news_features:
+                        res_macro_news = normalize_result(trainer(df_use, feature_cols=macro_features + news_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_Macro+News", res_macro_news["mean_da"], res_macro_news["fold_das"])
+                        results["Macro+News"] = res_macro_news
 
-            logger.info(f"{asset} All + RegimeInteraction DA: {res_all_inter['mean_fold_da']:.4f}")
+                    if all_features:
+                        res_all = normalize_result(trainer(df_use, feature_cols=all_features))
+                        tracker.add(asset, horizon, f"{dataset_name}_All", res_all["mean_da"], res_all["fold_das"])
+                        results["All"] = res_all
 
-            delta = res_all_inter["mean_fold_da"] - res_all["mean_fold_da"]
+                    # Regime-specific (if your function returns mean_da/fold_das; if not, wrap with normalize_result or adjust)
+                    if "vol_regime_high" in df_use.columns and all_features:
+                        res_regime = train_regime_specific(
+                            df_use,
+                            feature_cols=all_features + ["vol_regime_high"],
+                            alpha=config.get("ridge_alpha", 1.0)
+                        )
+                        # If train_regime_specific doesn't return mean_da, normalize it or fix the function return
+                        res_regime = normalize_result(res_regime)
+                        tracker.add(asset, horizon, f"{dataset_name}_RegimeSpecific", res_regime["mean_da"], res_regime["fold_das"])
 
-            logger.info(f"{asset} RegimeInteraction Delta vs All: {delta:+.4f}")
+                    # All + RegimeInteraction
+                    if all_features:
+                        res_all_inter = normalize_result(run_all_with_regime_interaction(
+                            df=df_use,
+                            base_feature_cols=all_features,
+                            config=config
+                        ))
+                        tracker.add(asset, horizon, f"{dataset_name}_All+RegimeInteraction", res_all_inter["mean_da"], res_all_inter["fold_das"])
 
-            res_gated = run_regime_gated_model(
-                df=df_model,
-                target_col="fwd_return",
-                feature_cols=all_features,
-                config=config,
-            )
+                        if "All" in results:
+                            delta = res_all_inter["mean_da"] - results["All"]["mean_da"]
+                            logger.info(f"{asset} | H{horizon} | {news_version} | {dataset_name} | RegimeInteraction Δ vs All: {delta:+.4f}")
 
-            logger.info(
-                f"{asset} XGBoost All Mean DA: {res_all['mean_fold_da']:.4f}"
-            )
+                    # Regime gated
+                    if all_features:
+                        res_gated = normalize_result(run_regime_gated_model(
+                            df=df_use,
+                            target_col="fwd_return",
+                            feature_cols=all_features,
+                            config=config,
+                        ))
+                        tracker.add(asset, horizon, f"{dataset_name}_All+RegimeGated", res_gated["mean_da"], res_gated["fold_das"])
 
-            logger.info(
-                f"{asset} All + RegimeGated DA: {res_gated['mean_fold_da']:.4f}"
-            )
+                    # Best for this asset+horizon across everything recorded so far
+                    best_row = tracker.best_for(asset, horizon)
+                    logger.info(f"{asset} | H{horizon} | {news_version} | {dataset_name} | Best={best_row['model']} ({best_row['mean_da']:.4f})")
+           
+    logger.info("=== PIPELINE COMPLETE ===")
+    tracker.save("outputs/results_full.csv")
+    tracker.save_summary("outputs/results_summary.csv")
 
-        logger.info("=== PIPELINE COMPLETE ===")
+    logger.info("Results saved to results_full.csv and results_summary.csv")
 
 
 # ---------------------------
@@ -415,7 +400,7 @@ def log_result(name, res, asset):
         logger.info(f"{asset} {name} Fold DAs: {res['fold_das']}")
         logger.info(
             f"{asset} {name} Mean Fold DA: "
-            f"{res['mean_fold_da']:.4f}"
+            f"{res['mean_da']:.4f}"
         )
 
 
@@ -514,8 +499,6 @@ def run_all_with_regime_interaction(df, base_feature_cols, config):
     # --- compute rolling volatility locally (safe)
     vol = df_int["log_return"].rolling(10).std()
 
-    # fill early NaNs
-    # vol = vol.fillna(method="bfill")
     vol = vol.bfill()
 
     # normalize
@@ -533,7 +516,77 @@ def run_all_with_regime_interaction(df, base_feature_cols, config):
 
     return train_baseline_regression(
         df=df_int,
-        target_col="fwd_return",  # target ??
+        target_col="fwd_return",
         feature_cols=feature_cols_extended,
         config=config
     )
+
+
+
+class ResultTracker:
+    def __init__(self):
+        self.records = []
+
+    def add(
+        self,
+        asset,
+        horizon,
+        model_name,
+        mean_da,
+        fold_das=None,
+        regime_variant=None,
+    ):
+        self.records.append({
+            "asset": asset,
+            "horizon": horizon,
+            "model": model_name,
+            "mean_da": float(mean_da),
+            "fold_das": fold_das,
+            "regime_variant": regime_variant,
+        })
+
+    def best_for(self, asset, horizon):
+        df = pd.DataFrame(self.records)
+        df = df[(df["asset"] == asset) & (df["horizon"] == horizon)]
+        return df.loc[df["mean_da"].idxmax()]
+
+    def summary_by_asset(self):
+        df = pd.DataFrame(self.records)
+
+        summary_rows = []
+
+        for asset in df["asset"].unique():
+            df_asset = df[df["asset"] == asset]
+
+            for horizon in sorted(df_asset["horizon"].unique()):
+                df_h = df_asset[df_asset["horizon"] == horizon]
+
+                best_row = df_h.loc[df_h["mean_da"].idxmax()]
+
+                summary_rows.append({
+                    "asset": asset,
+                    "horizon": horizon,
+                    "best_model": best_row["model"],
+                    "best_da": best_row["mean_da"],
+                })
+
+        return pd.DataFrame(summary_rows)
+
+    def save(self, path="results_full.csv"):
+        df = pd.DataFrame(self.records)
+        df.to_csv(path, index=False)
+
+    def save_summary(self, path="results_summary.csv"):
+        summary_df = self.summary_by_asset()
+        summary_df.to_csv(path, index=False)
+
+
+
+def normalize_result(res):
+    if "mean_da" in res:
+        return res
+    elif "mean_fold_da" in res:
+        res["mean_da"] = res["mean_fold_da"]
+        return res
+    else:
+        raise ValueError("Trainer result missing mean_da / mean_fold_da")
