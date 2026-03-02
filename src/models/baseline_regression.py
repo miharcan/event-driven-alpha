@@ -30,7 +30,8 @@ def run_regime_gated_model(
     y = df[target_col]
 
     n = len(df)
-    folds = 4
+    # folds = 4
+    folds = config["model"]["n_splits"]
     initial_train_size = int(n * 0.6)
     fold_size = int((n - initial_train_size) / folds)
 
@@ -114,7 +115,8 @@ def train_baseline_regression(
     y = df[target_col]
 
     n = len(df)
-    folds = 4
+    # folds = 4
+    folds = config["model"]["n_splits"]
     train_start = 0
     initial_train_size = int(n * 0.6)
     fold_size = int((n - initial_train_size) / folds)

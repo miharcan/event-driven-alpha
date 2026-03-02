@@ -18,7 +18,7 @@ output_dir: "outputs"
 model_version: "baseline_v1"
 
 model:
-  model_type: ridge      # ridge | xgboost | lightgbm
+  model_type: xgboost      # ridge | xgboost | lightgbm
   n_splits: 5
   ridge_alpha: 0.10
 

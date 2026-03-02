@@ -8,3 +8,4 @@ seaborn
 tqdm
 pyyaml
 xgboost
+lightgbm

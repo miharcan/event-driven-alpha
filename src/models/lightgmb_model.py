@@ -1,26 +1,28 @@
-# src/models/xgboost_model.py
-
 import numpy as np
-import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit
+import lightgbm as lgb
 from src.models.baseline_regression import directional_accuracy
 
 
-def train_xgboost(df, feature_cols, config):
+def train_lightgbm(df, feature_cols, config):
 
     target_col = "fwd_return"
-    n_splits = config["model"]["n_splits"]
+    folds = config["model"]["n_splits"]
 
-    tscv = TimeSeriesSplit(n_splits=n_splits)
+    n = len(df)
+    initial_train_size = int(n * 0.6)
+    fold_size = int((n - initial_train_size) / folds)
 
     fold_das = []
     all_preds = []
     all_y = []
 
-    for train_idx, test_idx in tscv.split(df):
+    for i in range(folds):
 
-        train_df = df.iloc[train_idx]
-        test_df = df.iloc[test_idx]
+        train_end = initial_train_size + i * fold_size
+        test_end = train_end + fold_size
+
+        train_df = df.iloc[:train_end]
+        test_df = df.iloc[train_end:test_end]
 
         X_train = train_df[feature_cols]
         y_train = (train_df[target_col] > 0).astype(int)
@@ -28,21 +30,18 @@ def train_xgboost(df, feature_cols, config):
         X_test = test_df[feature_cols]
         y_test = (test_df[target_col] > 0).astype(int)
 
-        model = xgb.XGBClassifier(
-            objective="binary:logistic",
-            n_estimators=300,
-            max_depth=4,
+        model = lgb.LGBMClassifier(
+            n_estimators=200,
+            max_depth=-1,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1,
-            eval_metric="logloss",
+            verbose=-1,
         )
 
         model.fit(X_train, y_train)
 
-        # preds = model.predict(X_test)
         probs = model.predict_proba(X_test)[:, 1]
         preds = (probs > 0.5).astype(int)
 
