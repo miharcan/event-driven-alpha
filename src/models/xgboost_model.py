@@ -23,26 +23,29 @@ def train_xgboost(df, feature_cols, config):
         test_df = df.iloc[test_idx]
 
         X_train = train_df[feature_cols]
-        y_train = train_df[target_col]
+        y_train = (train_df[target_col] > 0).astype(int)
 
         X_test = test_df[feature_cols]
-        y_test = test_df[target_col]
+        y_test = (test_df[target_col] > 0).astype(int)
 
-        model = xgb.XGBRegressor(
+        model = xgb.XGBClassifier(
+            objective="binary:logistic",
             n_estimators=300,
             max_depth=4,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             random_state=42,
-            n_jobs=-1
+            n_jobs=-1,
+            eval_metric="logloss",
         )
 
         model.fit(X_train, y_train)
 
         preds = model.predict(X_test)
 
-        da = directional_accuracy(y_test, preds)
+        # da = directional_accuracy(y_test, preds)
+        da = (preds == y_test).mean()
 
         fold_das.append(da)
         all_preds.extend(preds)
