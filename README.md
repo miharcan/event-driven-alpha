@@ -1,134 +1,192 @@
-# Event-Driven Alpha: Regime-Aware Multi-Modal Forecasting
+# Event-Driven Alpha: Modeling Framework
 
 ## Overview
 
-This repository implements an event-driven forecasting framework
-combining:
+This repository implements a research-grade modeling framework for
+evaluating event-driven directional prediction in commodity markets
+(metals, energy, agricultural products).
 
--   Time-series price features
--   Macroeconomic indicators
--   NLP-derived news embeddings
--   Volatility regime detection
--   Walk-forward validation
+The system integrates:
 
-The system evaluates directional forecasting performance across multiple
-assets and feature configurations.
+-   Price-based technical features\
+-   Macro features\
+-   News embedding features\
+-   Event intensity conditioning\
+-   Volatility regime modeling\
+-   Walk-forward cross-validation\
+-   Linear and tree-based model families
 
-The goal is exploratory research into whether structured news and macro
-information improve short-horizon financial forecasting under regime
-shifts.
+The goal is to evaluate whether predictive signal is:
 
-------------------------------------------------------------------------
-
-## Selected Experimental Highlights
-
-Across multiple assets and configurations, the framework demonstrates
-consistent directional performance above random baseline (50%) in
-several cases:
-
--   Directional Accuracy (DA) reaching **\~0.58--0.59** using price-only
-    models
--   Multi-modal combinations (Price + Macro) achieving **\~0.57 DA**
--   Macro-only models reaching **\~0.57 DA** in certain assets
--   News-enhanced models achieving **\~0.55 DA** in selected
-    configurations
--   Regime-conditioned performance showing improved stability in
-    low-volatility environments
-
-These results indicate that structured feature integration and regime
-awareness can produce meaningful predictive signal under strict
-walk-forward validation.
+-   Linear vs nonlinear\
+-   Regime-dependent\
+-   Event-intensity dependent\
+-   Horizon-sensitive
 
 ------------------------------------------------------------------------
 
-## Data Inputs
+## Architecture
 
-The pipeline expects the following data types:
+### Data Inputs
 
-### 1. Price Data
+-   Historical price data
+-   Macro time series data
+-   News headline dataset (embedded using transformer-based sentence
+    embeddings)
 
--   Daily OHLC or returns
--   Rolling features (e.g., lagged returns)
--   Volatility estimation inputs
+### Feature Engineering
 
-### 2. Macroeconomic Features
+-   Log returns and lagged returns
+-   Rolling volatility measures
+-   Volatility regime classification
+-   News embeddings (dimension-reduced)
+-   Event intensity filtering (percentile-based)
+-   Optional interaction features
 
--   Interest rates
--   Inflation metrics
--   Yield spreads
--   Other macro indicators aligned by date
-
-### 3. News Data
-
--   Timestamped headlines
--   Optional asset tagging
--   Text embeddings generated using sentence-transformer models
--   Daily aggregation of embeddings
--   Article count features
+All feature engineering is performed prior to model training to prevent
+leakage.
 
 ------------------------------------------------------------------------
 
-## Feature Engineering
+## Modeling Families
 
--   Rolling return windows
--   Volatility regime classification (high/low via rolling std)
--   News embedding PCA compression
--   High-attention filtering (based on article volume)
+The framework supports multiple model types via configuration:
 
-------------------------------------------------------------------------
+### 1. Ridge Regression (Linear Baseline)
 
-## Models
+-   Expanding-window walk-forward CV
+-   Directional prediction via regression sign
+-   Serves as linear benchmark
 
--   Linear Regression
--   Ridge Regression
--   Walk-forward time-series cross-validation
--   Regime-specific training (separate models per volatility state)
+### 2. XGBoost (Tree-Based)
 
-------------------------------------------------------------------------
+-   Binary classification objective
+-   Captures nonlinear interactions
+-   Expanding-window CV
 
-## Evaluation Metrics
+### 3. LightGBM (Tree-Based)
 
--   Directional Accuracy (primary metric)
--   Fold-level DA
--   Aggregated regime DA
--   MSE and R²
+-   Gradient boosting framework
+-   Fast and efficient tree construction
+-   Suppressed training verbosity for clean experimentation
 
-All evaluation is performed using strict chronological splits (no
-leakage).
+All models share:
 
-------------------------------------------------------------------------
+-   Identical CV geometry\
+-   Identical target construction\
+-   Identical evaluation metric
 
-## Questions Explored
-
--   Do macro features improve directional forecasts?
--   Does structured news embedding add incremental signal?
--   Does asset-specific news outperform global news?
--   Does volatility regime separation improve predictive performance?
--   Are multi-modal models more robust than single-source inputs?
+This ensures fair cross-model comparison.
 
 ------------------------------------------------------------------------
 
-## Running the Pipeline
+## Evaluation Methodology
+
+### Walk-Forward Cross-Validation
+
+-   Expanding training window
+-   Strict temporal ordering
+-   No look-ahead bias
+
+### Primary Metric
+
+Directional Accuracy (DA):
+
+Predicted direction vs realized forward return sign.
+
+Results are stored as:
+
+-   Full per-configuration results
+-   Per-model summary results
+-   Final cross-model comparison table
+
+------------------------------------------------------------------------
+
+## Event-Intensity Gradient
+
+The framework evaluates performance across percentile-based event
+intensity buckets:
+
+-   Full sample
+-   Top percentiles (e.g., Top 50, 60, 70, 80, 90)
+
+This allows testing whether predictive power concentrates during
+high-information regimes.
+
+------------------------------------------------------------------------
+
+## Regime Modeling
+
+Optional volatility regime interaction modeling is supported:
+
+-   Regime feature interaction
+-   Regime-specific training
+-   Conditional performance evaluation
+
+------------------------------------------------------------------------
+
+## Output Structure
+
+Each model run produces:
+
+-   results\_`<model>`\_full.csv\
+-   results\_`<model>`\_summary.csv
+
+A final comparison script merges model families into:
+
+-   final_model_comparison.csv
+
+------------------------------------------------------------------------
+
+## Key Research Questions
+
+1.  Is predictive structure linear or nonlinear?
+2.  Does signal concentrate in high-intensity event regimes?
+3.  Does volatility regime alter predictive strength?
+4.  Are improvements consistent across forecast horizons?
+
+------------------------------------------------------------------------
+
+## Design Principles
+
+-   No data leakage
+-   Reproducible configuration-based modeling
+-   Model-family modularity
+-   Consistent evaluation geometry
+-   Transparent result tracking
+
+------------------------------------------------------------------------
+
+## How To Run
+
+Run with a specific configuration:
 
 ``` bash
-python -m eda.cli --config configs/default.yaml
+python -m eda.cli --config configs/<model_config>.yaml
+```
+
+Available model types:
+
+-   ridge
+-   xgboost
+-   lightgbm
+
+After running all model families:
+
+``` bash
+python analysis/final_model_comparison.py
 ```
 
 ------------------------------------------------------------------------
 
-## Experimental Design
+## Conclusion
 
--   Multi-asset evaluation
--   Walk-forward folds
--   Parallel unified vs regime-specific models
--   Embedding compression via PCA
--   High-attention news subset analysis
+This repository provides a clean experimental framework for testing
+whether directional signals in commodity markets are primarily:
 
-------------------------------------------------------------------------
+-   Linear
+-   Nonlinear
+-   Conditional on event intensity
+-   Regime-dependent
 
-## Notes
-
-This repository is designed for exploratory quantitative research and
-methodological investigation.
-
-It is not intended for live trading deployment.
+It is structured for clarity, reproducibility, and extensibility.
