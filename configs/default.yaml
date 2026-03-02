@@ -22,6 +22,11 @@ model_type: "ridge"   # options: linear | ridge
 ridge_alpha: 0.10
 
 
+model_type: xgboost
+model:
+  n_splits: 5
+
+
 asset_keywords:
   Gold: ["gold", "inflation", "fed", "dollar", "treasury", "rate hike"]
   Silver: ["silver", "inflation", "industrial demand", "fed"]
