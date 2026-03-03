@@ -138,7 +138,7 @@ A final comparison script merges model families into:
 
 ------------------------------------------------------------------------
 
-## Key Research Questions
+## Key Questions
 
 1.  Is predictive structure linear or nonlinear?
 2.  Does signal concentrate in high-intensity event regimes?
@@ -147,15 +147,24 @@ A final comparison script merges model families into:
 
 ------------------------------------------------------------------------
 
-## Design Principles
+## Key Findings
 
--   No data leakage
--   Reproducible configuration-based modeling
--   Model-family modularity
--   Consistent evaluation geometry
--   Transparent result tracking
+1.  Event intensity unlocks the signal.
+Full-sample models average ~52–58% directional accuracy. Conditioning on high-information regimes (Top 60–90%) pushes performance to 65–78% DA across metals, energy, and broader commodities.
 
-------------------------------------------------------------------------
+2.  Filtering beats complexity.
+Moving to high-intensity subsets delivers larger gains than switching model families. Signal concentration drives performance more than algorithm sophistication.
+
+3.  Nonlinearity matters — but only where it should.
+Tree-based models add +3–8% DA in short-horizon, high-intensity environments. Longer horizons remain largely linear and macro-driven.
+
+3.  Horizon changes the game.
+Short-term forecasts (3–10 periods) show sharper nonlinear effects (~68–72% DA). Longer horizons (≈20 periods) reach 70–79% DA primarily via structured linear drift.
+
+4.  Regime-aware modeling improves selectively.
+Volatility interaction terms produce +2–9% DA improvements in targeted contexts, while hard regime segmentation reduces statistical stability.
+
+-----------------------------------------------------------
 
 ## How To Run
 
