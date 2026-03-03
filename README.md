@@ -164,6 +164,22 @@ Short-term forecasts (3–10 periods) show sharper nonlinear effects (~68–72% 
 4.  Regime-aware modeling improves selectively.
 Volatility interaction terms produce +2–9% DA improvements in targeted contexts, while hard regime segmentation reduces statistical stability.
 
+------------------------------------------------------------------------
+
+## Final Best Model per Asset
+
+| Asset          | Model Family | Horizon | Best Model                           | Directional Accuracy |
+|----------------|--------------|----------|-------------------------------------|----------------------|
+| Energy_1       | Ridge        | 20       | Top60_Macro                         | 0.7867 |
+| Metal_1        | Ridge        | 20       | Top90_All+RegimeInteraction         | 0.7778 |
+| Metal_2        | LightGBM     | 5        | Top90_News                          | 0.7111 |
+| Metal_3        | LightGBM     | 10       | Top80_Price                         | 0.7000 |
+| Metal_4        | Ridge        | 10       | Top80_RegimeSpecific                | 0.7000 |
+| Energy_2       | LightGBM     | 3        | Top90_News                          | 0.6889 |
+| Commodities_1  | LightGBM     | 10       | Top90_Price                         | 0.6667 |
+| Commodities_2  | Ridge        | 20       | Top50_Macro                         | 0.6520 |
+
+
 -----------------------------------------------------------
 
 ## How To Run

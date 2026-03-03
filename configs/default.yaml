@@ -22,20 +22,22 @@ model:
   n_splits: 5
   ridge_alpha: 0.10
 
-  # XGBoost params (only used if model_type == xgboost)
+  # XGBoost
   xgb_n_estimators: 300
   xgb_max_depth: 4
   xgb_learning_rate: 0.05
 
-  # LightGBM params (only used if model_type == lightgbm)
+  # LightGBM
   lgb_n_estimators: 300
   lgb_max_depth: -1
   lgb_learning_rate: 0.05
 
+  # ARIMA
   model_type: arima
   n_splits: 5
   arima_order: [1, 0, 0]
 
+  # LSTM
   model_type: lstm
   n_splits: 5
   lookback: 20
