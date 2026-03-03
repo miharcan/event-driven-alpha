@@ -82,6 +82,9 @@ def run_pipeline(config: dict):
 
     trainer = get_model_trainer(config["model"]["model_type"], config)
 
+    model_type = config["model"]["model_type"]
+
+
     # ---------------------------
     # 2. Load Price File (Raw)
     # ---------------------------
@@ -183,8 +186,7 @@ def run_pipeline(config: dict):
             df_price_h = add_forward_return(df_price_h, horizon=horizon)
             df_price_h = add_volatility_regime(df_price_h)
 
-
-            # --- Merge macro (CRITICAL FIX)
+            # --- Merge macro
             df_price_h = df_price_h.join(df_macro, how="left")
             df_price_h = df_price_h.ffill()
 
@@ -231,6 +233,43 @@ def run_pipeline(config: dict):
             for name, df_tmp in [("global", df_model_global), ("asset", df_model_asset)]:
                 df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
                 df_tmp.dropna(inplace=True)
+
+            # -------------------------------------------------
+            # Time-series baseline (ARIMA | LSTM)
+            # Run once per asset + horizon
+            # -------------------------------------------------
+            if model_type in ["arima", "lstm"]:
+
+                df_ts = df_model_global.copy()
+
+                if len(df_ts) < 200:
+                    logger.info(f"{asset}: Not enough data for {model_type.upper()}.")
+                    continue
+
+                res = normalize_result(
+                    trainer(df_ts, feature_cols=[])
+                )
+
+                model_name = f"{model_type.upper()}_Full"
+
+                tracker.add(
+                    asset,
+                    horizon,
+                    model_name,
+                    res["mean_da"],
+                    res["fold_das"],
+                )
+
+                if res["mean_da"] is not None:
+                    logger.info(
+                        f"{asset} | H{horizon} | {model_name} = {res['mean_da']:.4f}"
+                    )
+                else:
+                    logger.info(
+                        f"{asset} | H{horizon} | {model_name} = None (no valid folds)"
+                    )
+
+                continue  # Skip feature/dataset loops entirely
 
             for news_version, df_model in [
                 ("GlobalNews", df_model_global),
@@ -533,7 +572,6 @@ def run_all_with_regime_interaction(df, base_feature_cols, config):
     )
 
 
-
 class ResultTracker:
     def __init__(self):
         self.records = []
@@ -551,7 +589,7 @@ class ResultTracker:
             "asset": asset,
             "horizon": horizon,
             "model": model_name,
-            "mean_da": float(mean_da),
+            "mean_da": float(mean_da) if mean_da is not None else np.nan,
             "fold_das": fold_das,
             "regime_variant": regime_variant,
         })
@@ -572,7 +610,13 @@ class ResultTracker:
             for horizon in sorted(df_asset["horizon"].unique()):
                 df_h = df_asset[df_asset["horizon"] == horizon]
 
-                best_row = df_h.loc[df_h["mean_da"].idxmax()]
+                # best_row = df_h.loc[df_h["mean_da"].idxmax()]
+                df_h_valid = df_h.dropna(subset=["mean_da"])
+
+                if df_h_valid.empty:
+                    continue
+
+                best_row = df_h_valid.loc[df_h_valid["mean_da"].idxmax()]
 
                 summary_rows.append({
                     "asset": asset,

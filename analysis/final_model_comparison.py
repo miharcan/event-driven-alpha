@@ -3,12 +3,15 @@ import pandas as pd
 ridge = pd.read_csv("outputs/results_ridge_summary.csv")
 xgb = pd.read_csv("outputs/results_xgboost_summary.csv")
 lgb = pd.read_csv("outputs/results_lightgbm_summary.csv")
+arima = pd.read_csv("outputs/results_arima_summary.csv")
+
 
 ridge["model_family"] = "Ridge"
 xgb["model_family"] = "XGBoost"
 lgb["model_family"] = "LightGBM"
+arima["model_family"] = "ARIMA"
 
-df = pd.concat([ridge, xgb, lgb], ignore_index=True)
+df = pd.concat([ridge, xgb, lgb, arima], ignore_index=True)
 
 print("Columns:", df.columns)
 
