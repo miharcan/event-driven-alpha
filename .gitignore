@@ -8,6 +8,7 @@ __pycache__/
 
 # Virtual environments
 venv/
+.venv/
 .env/
 
 # VS Code
@@ -26,5 +27,6 @@ data/processed/*
 
 
 *.egg-info/
+build/
 
 outputs/

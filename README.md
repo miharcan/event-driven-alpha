@@ -184,6 +184,22 @@ Volatility interaction terms produce +2–9% DA improvements in targeted context
 
 ## How To Run
 
+### Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install .
+```
+
+Notes:
+- Dependencies are managed in `pyproject.toml` (single source of truth).
+- `lstm` model type requires TensorFlow, which is not installed by default.
+- First run downloads embedding model artifacts from Hugging Face; this can take a few minutes.
+- Setting `HF_TOKEN` is recommended to avoid unauthenticated rate limits/timeouts.
+- For tree models, set `model.compute_device` to `cuda` (or `auto`) to offload training where supported.
+
 Run with a specific configuration:
 
 ``` bash
@@ -201,6 +217,13 @@ After running all model families:
 ``` bash
 python analysis/final_model_comparison.py
 ```
+
+### Troubleshooting Long Runs
+
+- If the pipeline appears idle after dataset alignment logs, it is usually running the walk-forward experiment matrix (multiple feature sets x datasets x horizons).
+- The pipeline now emits per-block timing logs (for example `Price done in ...s`, `All+RegimeInteraction done in ...s`) so progress is visible during long model runs.
+- If downloads are slow or retrying, set `HF_TOKEN` in your environment before running.
+- `xgboost` and `lightgbm` can use GPU (`model.compute_device: cuda`); `ridge` remains CPU-bound.
 
 ------------------------------------------------------------------------
 

@@ -18,8 +18,9 @@ output_dir: "outputs"
 model_version: "baseline_v1"
 
 model:
-  model_type: lstm      # ridge | xgboost | lightgbm | arima | lstm
-  n_splits: 5
+  model_type: ridge      # ridge | xgboost | lightgbm | arima | lstm
+  compute_device: auto     # auto | cpu | cuda (used by xgboost/lightgbm)
+  n_splits: 3
   ridge_alpha: 0.10
 
   # XGBoost
@@ -33,16 +34,12 @@ model:
   lgb_learning_rate: 0.05
 
   # ARIMA
-  model_type: arima
-  n_splits: 5
   arima_order: [1, 0, 0]
 
-  # LSTM
-  model_type: lstm
-  n_splits: 5
+  # LSTM (requires TensorFlow)
   lookback: 20
 
-horizons: [1, 3, 5, 10, 20]
+horizons: [1]   #[1, 3, 5, 10, 20]
 
 asset_keywords:
   Gold: ["gold", "inflation", "fed", "dollar", "treasury", "rate hike"]

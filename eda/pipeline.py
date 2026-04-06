@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime
 import numpy as np
 import re
+from time import perf_counter
 from sklearn.decomposition import PCA
 from collections import defaultdict
 
@@ -129,6 +130,7 @@ def run_pipeline(config: dict):
         model_name=config.get("embedding_model", "all-MiniLM-L6-v2")
     )
 
+    embed_start = perf_counter()
     headline_embeddings = embedder.embed_headlines(df_news_raw)
     daily_embeddings = embedder.aggregate_daily(
         df_news_raw,
@@ -143,6 +145,11 @@ def run_pipeline(config: dict):
         daily_embeddings,
         how="left"
     ).fillna(0)
+    logger.info(
+        "Prepared global news feature matrix with %d rows in %.2fs",
+        len(df_news),
+        perf_counter() - embed_start,
+    )
 
     # ---------------------------
     # 4. Load Macro Features
@@ -175,7 +182,41 @@ def run_pipeline(config: dict):
         df_price = compute_log_returns(df_price)
         df_price = compute_rolling_volatility(df_price)
         df_price = add_lag_features(df_price, "log_return", 3)
-        
+
+        # Asset-specific news is independent of horizon: compute once per asset.
+        asset_kw = config.get("asset_keywords", {}).get(asset, [])
+
+        if asset_kw:
+            pattern_asset = re.compile("|".join(asset_kw), re.IGNORECASE)
+            df_asset_news_raw = df_news_raw[
+                df_news_raw["headline"].str.contains(pattern_asset, na=False)
+            ].copy()
+            logger.info("%s: Asset-specific headlines = %d", asset, len(df_asset_news_raw))
+        else:
+            df_asset_news_raw = df_news_raw.copy()
+            logger.info("%s: No asset keywords configured; using global news set.", asset)
+
+        asset_news_start = perf_counter()
+        df_asset_structured = build_daily_news_features(df_asset_news_raw)
+        headline_emb_asset = embedder.embed_headlines(df_asset_news_raw)
+        daily_emb_asset = embedder.aggregate_daily(
+            df_asset_news_raw,
+            headline_emb_asset,
+        )
+        daily_emb_asset.columns = [
+            f"emb_{i}" for i in range(daily_emb_asset.shape[1])
+        ]
+        df_news_asset = df_asset_structured.join(
+            daily_emb_asset,
+            how="left"
+        ).fillna(0)
+        logger.info(
+            "%s: Prepared asset news feature matrix with %d rows in %.2fs",
+            asset,
+            len(df_news_asset),
+            perf_counter() - asset_news_start,
+        )
+
         horizons = config.get("horizons", [5])
         for horizon in horizons:
 
@@ -190,45 +231,19 @@ def run_pipeline(config: dict):
             df_price_h = df_price_h.join(df_macro, how="left")
             df_price_h = df_price_h.ffill()
 
-            asset_kw = config.get("asset_keywords", {}).get(asset, [])
-
-            if asset_kw:
-                pattern_asset = re.compile("|".join(asset_kw), re.IGNORECASE)
-
-                df_asset_news_raw = df_news_raw[
-                    df_news_raw["headline"].str.contains(pattern_asset, na=False)
-                ].copy()
-
-                logger.info(f"{asset}: Asset-specific headlines = {len(df_asset_news_raw)}")
-
-            else:
-                df_asset_news_raw = df_news_raw.copy()
-
-            # Structured features
-            df_asset_structured = build_daily_news_features(df_asset_news_raw)
-
-            # Embeddings
-            headline_emb_asset = embedder.embed_headlines(df_asset_news_raw)
-            daily_emb_asset = embedder.aggregate_daily(
-                df_asset_news_raw,
-                headline_emb_asset,
-            )
-
-            daily_emb_asset.columns = [
-                f"emb_{i}" for i in range(daily_emb_asset.shape[1])
-            ]
-
-            df_news_asset = df_asset_structured.join(
-                daily_emb_asset,
-                how="left"
-            ).fillna(0)
-
             df_model_global = align_price_and_news(df_price_h, df_news)
 
             df_model_asset = align_price_and_news(df_price_h, df_news_asset)
 
             logger.info(f"{asset}: Global daily news rows = {len(df_news)}")
             logger.info(f"{asset}: Asset daily news rows = {len(df_news_asset)}")
+            logger.info(
+                "%s | H%s | aligned rows: global=%d asset=%d",
+                asset,
+                horizon,
+                len(df_model_global),
+                len(df_model_asset),
+            )
 
             for name, df_tmp in [("global", df_model_global), ("asset", df_model_asset)]:
                 df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -298,8 +313,17 @@ def run_pipeline(config: dict):
                 # Dataset loop: Full vs HighAttention
                 # ---------------------------
                 for dataset_name, df_use in datasets:
+                    dataset_start = perf_counter()
 
                     df_use = df_use.copy()
+                    logger.info(
+                        "%s | H%s | %s | %s | starting experiments on %d rows",
+                        asset,
+                        horizon,
+                        news_version,
+                        dataset_name,
+                        len(df_use),
+                    )
 
                     # ---------------------------
                     # Identify Embeddings
@@ -351,42 +375,113 @@ def run_pipeline(config: dict):
                     results = {}
 
                     if price_cols:
+                        t0 = perf_counter()
                         res_price = normalize_result(trainer(df_use, feature_cols=price_cols))
                         tracker.add(asset, horizon, f"{dataset_name}_Price", res_price["mean_da"], res_price["fold_das"])
                         results["Price"] = res_price
+                        logger.info(
+                            "%s | H%s | %s | %s | Price done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_price['mean_da']:.4f}" if res_price["mean_da"] is not None else "None",
+                        )
 
                     if macro_features:
+                        t0 = perf_counter()
                         res_macro = normalize_result(trainer(df_use, feature_cols=macro_features))
                         tracker.add(asset, horizon, f"{dataset_name}_Macro", res_macro["mean_da"], res_macro["fold_das"])
                         results["Macro"] = res_macro
+                        logger.info(
+                            "%s | H%s | %s | %s | Macro done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_macro['mean_da']:.4f}" if res_macro["mean_da"] is not None else "None",
+                        )
 
                     if news_features:
+                        t0 = perf_counter()
                         res_news = normalize_result(trainer(df_use, feature_cols=news_features))
                         tracker.add(asset, horizon, f"{dataset_name}_News", res_news["mean_da"], res_news["fold_das"])
                         results["News"] = res_news
+                        logger.info(
+                            "%s | H%s | %s | %s | News done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_news['mean_da']:.4f}" if res_news["mean_da"] is not None else "None",
+                        )
 
                     if price_cols and macro_features:
+                        t0 = perf_counter()
                         res_price_macro = normalize_result(trainer(df_use, feature_cols=price_cols + macro_features))
                         tracker.add(asset, horizon, f"{dataset_name}_Price+Macro", res_price_macro["mean_da"], res_price_macro["fold_das"])
                         results["Price+Macro"] = res_price_macro
+                        logger.info(
+                            "%s | H%s | %s | %s | Price+Macro done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_price_macro['mean_da']:.4f}" if res_price_macro["mean_da"] is not None else "None",
+                        )
 
                     if price_cols and news_features:
+                        t0 = perf_counter()
                         res_price_news = normalize_result(trainer(df_use, feature_cols=price_cols + news_features))
                         tracker.add(asset, horizon, f"{dataset_name}_Price+News", res_price_news["mean_da"], res_price_news["fold_das"])
                         results["Price+News"] = res_price_news
+                        logger.info(
+                            "%s | H%s | %s | %s | Price+News done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_price_news['mean_da']:.4f}" if res_price_news["mean_da"] is not None else "None",
+                        )
 
                     if macro_features and news_features:
+                        t0 = perf_counter()
                         res_macro_news = normalize_result(trainer(df_use, feature_cols=macro_features + news_features))
                         tracker.add(asset, horizon, f"{dataset_name}_Macro+News", res_macro_news["mean_da"], res_macro_news["fold_das"])
                         results["Macro+News"] = res_macro_news
+                        logger.info(
+                            "%s | H%s | %s | %s | Macro+News done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_macro_news['mean_da']:.4f}" if res_macro_news["mean_da"] is not None else "None",
+                        )
 
                     if all_features:
+                        t0 = perf_counter()
                         res_all = normalize_result(trainer(df_use, feature_cols=all_features))
                         tracker.add(asset, horizon, f"{dataset_name}_All", res_all["mean_da"], res_all["fold_das"])
                         results["All"] = res_all
+                        logger.info(
+                            "%s | H%s | %s | %s | All done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_all['mean_da']:.4f}" if res_all["mean_da"] is not None else "None",
+                        )
 
                     # Regime-specific (if your function returns mean_da/fold_das; if not, wrap with normalize_result or adjust)
                     if "vol_regime_high" in df_use.columns and all_features:
+                        t0 = perf_counter()
                         res_regime = train_regime_specific(
                             df_use,
                             config,
@@ -396,15 +491,34 @@ def run_pipeline(config: dict):
                         # If train_regime_specific doesn't return mean_da, normalize it or fix the function return
                         res_regime = normalize_result(res_regime)
                         tracker.add(asset, horizon, f"{dataset_name}_RegimeSpecific", res_regime["mean_da"], res_regime["fold_das"])
+                        logger.info(
+                            "%s | H%s | %s | %s | RegimeSpecific done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_regime['mean_da']:.4f}" if res_regime["mean_da"] is not None else "None",
+                        )
 
                     # All + RegimeInteraction
                     if all_features:
+                        t0 = perf_counter()
                         res_all_inter = normalize_result(run_all_with_regime_interaction(
                             df=df_use,
                             base_feature_cols=all_features,
                             config=config
                         ))
                         tracker.add(asset, horizon, f"{dataset_name}_All+RegimeInteraction", res_all_inter["mean_da"], res_all_inter["fold_das"])
+                        logger.info(
+                            "%s | H%s | %s | %s | All+RegimeInteraction done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_all_inter['mean_da']:.4f}" if res_all_inter["mean_da"] is not None else "None",
+                        )
 
                         if "All" in results:
                             delta = res_all_inter["mean_da"] - results["All"]["mean_da"]
@@ -412,6 +526,7 @@ def run_pipeline(config: dict):
 
                     # Regime gated
                     if all_features:
+                        t0 = perf_counter()
                         res_gated = normalize_result(run_regime_gated_model(
                             df=df_use,
                             target_col="fwd_return",
@@ -419,10 +534,27 @@ def run_pipeline(config: dict):
                             config=config,
                         ))
                         tracker.add(asset, horizon, f"{dataset_name}_All+RegimeGated", res_gated["mean_da"], res_gated["fold_das"])
+                        logger.info(
+                            "%s | H%s | %s | %s | All+RegimeGated done in %.2fs (DA=%s)",
+                            asset,
+                            horizon,
+                            news_version,
+                            dataset_name,
+                            perf_counter() - t0,
+                            f"{res_gated['mean_da']:.4f}" if res_gated["mean_da"] is not None else "None",
+                        )
 
                     # Best for this asset+horizon across everything recorded so far
                     best_row = tracker.best_for(asset, horizon)
                     logger.info(f"{asset} | H{horizon} | {news_version} | {dataset_name} | Best={best_row['model']} ({best_row['mean_da']:.4f})")
+                    logger.info(
+                        "%s | H%s | %s | %s | finished dataset in %.2fs",
+                        asset,
+                        horizon,
+                        news_version,
+                        dataset_name,
+                        perf_counter() - dataset_start,
+                    )
            
     model_type = config["model"]["model_type"]
 
