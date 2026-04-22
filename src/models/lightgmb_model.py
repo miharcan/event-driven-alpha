@@ -2,6 +2,7 @@ import logging
 from time import perf_counter
 import numpy as np
 import lightgbm as lgb
+from src.models.utils import apply_fold_pca, expanding_window_slices
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +22,14 @@ def train_lightgbm(df, feature_cols, config):
 
     target_col = "fwd_return"
     folds = config["model"]["n_splits"]
-
-    n = len(df)
-    initial_train_size = int(n * 0.6)
-    fold_size = int((n - initial_train_size) / folds)
+    splits = expanding_window_slices(len(df), folds, train_fraction=0.6)
+    if not splits:
+        raise ValueError("Not enough data for walk-forward split.")
 
     fold_das = []
     all_preds = []
     all_y = []
+    fold_sizes = []
 
     device_type = _resolve_lgb_device(config)
     logger.info(
@@ -39,11 +40,8 @@ def train_lightgbm(df, feature_cols, config):
         folds,
     )
 
-    for i in range(folds):
+    for i, (train_end, test_end) in enumerate(splits):
         fold_start = perf_counter()
-
-        train_end = initial_train_size + i * fold_size
-        test_end = train_end + fold_size
 
         train_df = df.iloc[:train_end]
         test_df = df.iloc[train_end:test_end]
@@ -53,6 +51,14 @@ def train_lightgbm(df, feature_cols, config):
 
         X_test = test_df[feature_cols]
         y_test = (test_df[target_col] > 0).astype(int)
+        fold_sizes.append(len(y_test))
+
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
 
         model_kwargs = dict(
             n_estimators=config["model"].get("lgb_n_estimators", 200),
@@ -97,5 +103,7 @@ def train_lightgbm(df, feature_cols, config):
         "predictions": np.array(all_preds),
         "y_test": np.array(all_y),
         "fold_das": fold_das,
-        "mean_fold_da": np.mean(fold_das)
+        "mean_fold_da": np.mean(fold_das),
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }

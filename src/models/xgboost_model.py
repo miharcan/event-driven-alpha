@@ -2,7 +2,7 @@ import logging
 from time import perf_counter
 import numpy as np
 import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit
+from src.models.utils import apply_fold_pca, expanding_window_slices
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,14 @@ def train_xgboost(df, feature_cols, config):
     target_col = "fwd_return"
     n_splits = config["model"]["n_splits"]
 
-    tscv = TimeSeriesSplit(n_splits=n_splits)
-
     fold_das = []
     all_preds = []
     all_y = []
+    fold_sizes = []
+
+    splits = expanding_window_slices(len(df), n_splits, train_fraction=0.6)
+    if not splits:
+        raise ValueError("Not enough data for walk-forward split.")
 
     device, has_cuda = _resolve_xgb_device(config)
     if device == "cuda" and not has_cuda:
@@ -50,17 +53,25 @@ def train_xgboost(df, feature_cols, config):
         n_splits,
     )
 
-    for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(df), start=1):
+    for fold_idx, (train_end, test_end) in enumerate(splits, start=1):
         fold_start = perf_counter()
 
-        train_df = df.iloc[train_idx]
-        test_df = df.iloc[test_idx]
+        train_df = df.iloc[:train_end]
+        test_df = df.iloc[train_end:test_end]
 
         X_train = train_df[feature_cols]
         y_train = (train_df[target_col] > 0).astype(int)
 
         X_test = test_df[feature_cols]
         y_test = (test_df[target_col] > 0).astype(int)
+        fold_sizes.append(len(y_test))
+
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
 
         model_kwargs = dict(
             objective="binary:logistic",
@@ -110,5 +121,7 @@ def train_xgboost(df, feature_cols, config):
         "predictions": np.array(all_preds),
         "y_test": np.array(all_y),
         "fold_das": fold_das,
-        "mean_fold_da": np.mean(fold_das)
+        "mean_fold_da": np.mean(fold_das),
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }

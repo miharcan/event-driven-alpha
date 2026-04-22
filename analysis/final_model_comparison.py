@@ -1,36 +1,64 @@
+import argparse
+from pathlib import Path
 import pandas as pd
 
-ridge = pd.read_csv("outputs/results_ridge_summary.csv")
-xgb = pd.read_csv("outputs/results_xgboost_summary.csv")
-lgb = pd.read_csv("outputs/results_lightgbm_summary.csv")
-arima = pd.read_csv("outputs/results_arima_summary.csv")
+
+def family_label_from_file(path: Path) -> str:
+    name = path.stem.replace("results_", "").replace("_summary", "")
+    mapping = {
+        "ridge": "Ridge",
+        "xgboost": "XGBoost",
+        "lightgbm": "LightGBM",
+        "arima": "ARIMA",
+        "lstm": "LSTM",
+        "tcn": "TCN",
+        "patchtst": "PatchTST",
+    }
+    return mapping.get(name, name.upper())
 
 
-ridge["model_family"] = "Ridge"
-xgb["model_family"] = "XGBoost"
-lgb["model_family"] = "LightGBM"
-arima["model_family"] = "ARIMA"
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--outputs-dir", default="outputs")
+    args = parser.parse_args()
 
-df = pd.concat([ridge, xgb, lgb, arima], ignore_index=True)
+    out_dir = Path(args.outputs_dir)
+    summary_files = sorted(out_dir.glob("results_*_summary.csv"))
+    if not summary_files:
+        raise FileNotFoundError(f"No results_*_summary.csv files in {out_dir}")
 
-print("Columns:", df.columns)
+    frames = []
+    for f in summary_files:
+        df = pd.read_csv(f)
+        df["model_family"] = family_label_from_file(f)
+        frames.append(df)
 
-# Best model per asset (across families)
-best_overall = (
-    df.loc[df.groupby("asset")["best_da"].idxmax()]
-    .sort_values("best_da", ascending=False)
-    .reset_index(drop=True)
-)
+    df = pd.concat(frames, ignore_index=True)
+    print("Columns:", df.columns)
 
-print("\n=== FINAL BEST MODEL PER ASSET ===")
-print(best_overall[[
-    "asset",
-    "model_family",
-    "horizon",
-    "best_model",
-    "best_da"
-]])
+    best_overall = (
+        df.loc[df.groupby("asset")["best_da"].idxmax()]
+        .sort_values("best_da", ascending=False)
+        .reset_index(drop=True)
+    )
 
-best_overall.to_csv("outputs/final_model_comparison.csv", index=False)
+    print("\n=== FINAL BEST MODEL PER ASSET ===")
+    print(
+        best_overall[
+            [
+                "asset",
+                "model_family",
+                "horizon",
+                "best_model",
+                "best_da",
+            ]
+        ]
+    )
 
-print("\nSaved final_model_comparison.csv")
+    out_path = out_dir / "final_model_comparison.csv"
+    best_overall.to_csv(out_path, index=False)
+    print(f"\nSaved {out_path.name}")
+
+
+if __name__ == "__main__":
+    main()

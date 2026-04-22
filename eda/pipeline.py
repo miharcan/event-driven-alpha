@@ -1,14 +1,12 @@
 import logging
 from pathlib import Path
 import json
-from pathlib import Path
 import pandas as pd
 from datetime import datetime
 import numpy as np
 import re
+import math
 from time import perf_counter
-from sklearn.decomposition import PCA
-from collections import defaultdict
 
 from src.features.price_features import (
     compute_log_returns,
@@ -84,6 +82,8 @@ def run_pipeline(config: dict):
     trainer = get_model_trainer(config["model"]["model_type"], config)
 
     model_type = config["model"]["model_type"]
+    publication_cfg = config.get("publication", {})
+    news_filter_cfg = config.get("news_filter", {})
 
 
     # ---------------------------
@@ -104,20 +104,31 @@ def run_pipeline(config: dict):
     logger.info("Loading news data...")
 
     df_news_raw = load_news_json(config["news_path"])
+    logger.info("Headlines raw: %d", len(df_news_raw))
 
-    # Category filter
-    df_news_raw = df_news_raw[
-        df_news_raw["category"].isin(macro_categories)
-    ]
+    use_category_filter = news_filter_cfg.get("use_category_filter", True)
+    categories = news_filter_cfg.get("categories", macro_categories)
+    if use_category_filter:
+        df_news_raw = df_news_raw[df_news_raw["category"].isin(categories)]
+        logger.info("Headlines after category filter: %d", len(df_news_raw))
+    else:
+        logger.info("Category filter disabled.")
 
-    logger.info(f"Headlines before keyword filter: {len(df_news_raw)}")
+    use_keyword_filter = news_filter_cfg.get("use_keyword_filter", True)
+    keywords = news_filter_cfg.get("keywords", macro_keywords)
+    if use_keyword_filter and keywords:
+        pattern = re.compile("|".join(keywords), re.IGNORECASE)
+        df_news_raw = df_news_raw[df_news_raw["headline"].str.contains(pattern, na=False)]
+        logger.info("Headlines after keyword filter: %d", len(df_news_raw))
+    else:
+        logger.info("Keyword filter disabled.")
 
-    # Keyword filter
-    df_news_raw = df_news_raw[
-        df_news_raw["headline"].str.contains(pattern, na=False)
-    ]
-
-    logger.info(f"Headlines after keyword filter: {len(df_news_raw)}")
+    max_headlines = news_filter_cfg.get("max_headlines")
+    if max_headlines is not None:
+        max_headlines = int(max_headlines)
+        if len(df_news_raw) > max_headlines:
+            df_news_raw = df_news_raw.iloc[:max_headlines].copy()
+            logger.info("Applied max_headlines=%d; kept %d", max_headlines, len(df_news_raw))
 
     if len(df_news_raw) < 1000:
         logger.warning("Very few headlines after filtering.")
@@ -249,11 +260,25 @@ def run_pipeline(config: dict):
                 df_tmp.replace([np.inf, -np.inf], np.nan, inplace=True)
                 df_tmp.dropna(inplace=True)
 
+            smoke_frac = publication_cfg.get("smoke_sample_fraction")
+            smoke_min_rows = publication_cfg.get("smoke_min_rows", 220)
+            if smoke_frac is not None:
+                df_model_global = downsample_chrono(df_model_global, smoke_frac, smoke_min_rows)
+                df_model_asset = downsample_chrono(df_model_asset, smoke_frac, smoke_min_rows)
+                logger.info(
+                    "%s | H%s | smoke sampling active: frac=%s global=%d asset=%d",
+                    asset,
+                    horizon,
+                    smoke_frac,
+                    len(df_model_global),
+                    len(df_model_asset),
+                )
+
             # -------------------------------------------------
             # Time-series baseline (ARIMA | LSTM)
             # Run once per asset + horizon
             # -------------------------------------------------
-            if model_type in ["arima", "lstm"]:
+            if model_type in ["arima", "lstm", "tcn", "patchtst"]:
 
                 df_ts = df_model_global.copy()
 
@@ -273,6 +298,8 @@ def run_pipeline(config: dict):
                     model_name,
                     res["mean_da"],
                     res["fold_das"],
+                    n_test_obs=res.get("n_test_obs"),
+                    eval_split="cv",
                 )
 
                 if res["mean_da"] is not None:
@@ -294,20 +321,10 @@ def run_pipeline(config: dict):
                     logger.info(f"{asset}: Not enough overlapping data.")
                     continue
 
-                datasets = [("Full", df_model)]
-
-                if "article_count" in df_model.columns:
-
-                    percentiles = [0.5, 0.6, 0.7, 0.8, 0.9]
-
-                    for q in percentiles:
-                        threshold = df_model["article_count"].quantile(q)
-
-                        df_filtered = df_model[df_model["article_count"] > threshold].copy()
-
-                        if len(df_filtered) > 100:
-                            label = f"Top{int(q*100)}"
-                            datasets.append((label, df_filtered))
+                datasets = build_attention_datasets(
+                    df_model=df_model,
+                    publication_cfg=publication_cfg,
+                )
 
                 # ---------------------------
                 # Dataset loop: Full vs HighAttention
@@ -325,49 +342,20 @@ def run_pipeline(config: dict):
                         len(df_use),
                     )
 
-                    # ---------------------------
-                    # Identify Embeddings
-                    # ---------------------------
-                    raw_embedding_cols = [c for c in df_use.columns if c.startswith("emb_")]
-                    if not raw_embedding_cols:
+                    feature_blocks = build_feature_blocks(
+                        df_use=df_use,
+                        df_macro=df_macro,
+                        config=config,
+                        publication_cfg=publication_cfg,
+                    )
+                    if feature_blocks is None:
                         logger.warning(f"{asset} | H{horizon} | {news_version} | {dataset_name}: No raw embedding cols.")
                         continue
-
-                    # PCA -> emb_pca_0..9
-                    pca = PCA(n_components=10)
-                    emb_pca = pd.DataFrame(
-                        pca.fit_transform(df_use[raw_embedding_cols]),
-                        index=df_use.index,
-                        columns=[f"emb_pca_{i}" for i in range(10)]
-                    )
-                    df_use = df_use.join(emb_pca)
-
-                    pca_cols = [f"emb_pca_{i}" for i in range(10)]
-                    df_use["emb_mean"] = df_use[pca_cols].mean(axis=1)
-
-                    # ---------------------------
-                    # Identify Macro Features (from df_macro columns)
-                    # ---------------------------
-                    macro_cols = [c for c in df_use.columns if c in df_macro.columns]
-                    
-
-                    # ---------------------------
-                    # Interaction Terms (emb_mean x macro)
-                    # ---------------------------
-                    interaction_cols = []
-                    for macro in macro_cols:
-                        col_name = f"emb_mean_x_{macro}"
-                        df_use[col_name] = df_use["emb_mean"] * df_use[macro]
-                        interaction_cols.append(col_name)
-
-                    # ---------------------------
-                    # Feature Blocks
-                    # ---------------------------
-                    price_cols = config["price_features"]
-
-                    news_features = pca_cols
-                    macro_features = macro_cols
-                    all_features = price_cols + macro_cols + pca_cols + interaction_cols
+                    df_use = feature_blocks["df_use"]
+                    price_cols = feature_blocks["price_cols"]
+                    macro_features = feature_blocks["macro_features"]
+                    news_features = feature_blocks["news_features"]
+                    all_features = feature_blocks["all_features"]
 
                     # ---------------------------
                     # Experiments
@@ -377,7 +365,15 @@ def run_pipeline(config: dict):
                     if price_cols:
                         t0 = perf_counter()
                         res_price = normalize_result(trainer(df_use, feature_cols=price_cols))
-                        tracker.add(asset, horizon, f"{dataset_name}_Price", res_price["mean_da"], res_price["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_Price",
+                            res_price["mean_da"],
+                            res_price["fold_das"],
+                            n_test_obs=res_price.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["Price"] = res_price
                         logger.info(
                             "%s | H%s | %s | %s | Price done in %.2fs (DA=%s)",
@@ -392,7 +388,15 @@ def run_pipeline(config: dict):
                     if macro_features:
                         t0 = perf_counter()
                         res_macro = normalize_result(trainer(df_use, feature_cols=macro_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_Macro", res_macro["mean_da"], res_macro["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_Macro",
+                            res_macro["mean_da"],
+                            res_macro["fold_das"],
+                            n_test_obs=res_macro.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["Macro"] = res_macro
                         logger.info(
                             "%s | H%s | %s | %s | Macro done in %.2fs (DA=%s)",
@@ -407,7 +411,15 @@ def run_pipeline(config: dict):
                     if news_features:
                         t0 = perf_counter()
                         res_news = normalize_result(trainer(df_use, feature_cols=news_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_News", res_news["mean_da"], res_news["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_News",
+                            res_news["mean_da"],
+                            res_news["fold_das"],
+                            n_test_obs=res_news.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["News"] = res_news
                         logger.info(
                             "%s | H%s | %s | %s | News done in %.2fs (DA=%s)",
@@ -422,7 +434,15 @@ def run_pipeline(config: dict):
                     if price_cols and macro_features:
                         t0 = perf_counter()
                         res_price_macro = normalize_result(trainer(df_use, feature_cols=price_cols + macro_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_Price+Macro", res_price_macro["mean_da"], res_price_macro["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_Price+Macro",
+                            res_price_macro["mean_da"],
+                            res_price_macro["fold_das"],
+                            n_test_obs=res_price_macro.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["Price+Macro"] = res_price_macro
                         logger.info(
                             "%s | H%s | %s | %s | Price+Macro done in %.2fs (DA=%s)",
@@ -437,7 +457,15 @@ def run_pipeline(config: dict):
                     if price_cols and news_features:
                         t0 = perf_counter()
                         res_price_news = normalize_result(trainer(df_use, feature_cols=price_cols + news_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_Price+News", res_price_news["mean_da"], res_price_news["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_Price+News",
+                            res_price_news["mean_da"],
+                            res_price_news["fold_das"],
+                            n_test_obs=res_price_news.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["Price+News"] = res_price_news
                         logger.info(
                             "%s | H%s | %s | %s | Price+News done in %.2fs (DA=%s)",
@@ -452,7 +480,15 @@ def run_pipeline(config: dict):
                     if macro_features and news_features:
                         t0 = perf_counter()
                         res_macro_news = normalize_result(trainer(df_use, feature_cols=macro_features + news_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_Macro+News", res_macro_news["mean_da"], res_macro_news["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_Macro+News",
+                            res_macro_news["mean_da"],
+                            res_macro_news["fold_das"],
+                            n_test_obs=res_macro_news.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["Macro+News"] = res_macro_news
                         logger.info(
                             "%s | H%s | %s | %s | Macro+News done in %.2fs (DA=%s)",
@@ -467,7 +503,15 @@ def run_pipeline(config: dict):
                     if all_features:
                         t0 = perf_counter()
                         res_all = normalize_result(trainer(df_use, feature_cols=all_features))
-                        tracker.add(asset, horizon, f"{dataset_name}_All", res_all["mean_da"], res_all["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_All",
+                            res_all["mean_da"],
+                            res_all["fold_das"],
+                            n_test_obs=res_all.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         results["All"] = res_all
                         logger.info(
                             "%s | H%s | %s | %s | All done in %.2fs (DA=%s)",
@@ -488,9 +532,16 @@ def run_pipeline(config: dict):
                             feature_cols=all_features + ["vol_regime_high"],
                             alpha=config.get("ridge_alpha", 1.0)
                         )
-                        # If train_regime_specific doesn't return mean_da, normalize it or fix the function return
                         res_regime = normalize_result(res_regime)
-                        tracker.add(asset, horizon, f"{dataset_name}_RegimeSpecific", res_regime["mean_da"], res_regime["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_RegimeSpecific",
+                            res_regime["mean_da"],
+                            res_regime["fold_das"],
+                            n_test_obs=res_regime.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         logger.info(
                             "%s | H%s | %s | %s | RegimeSpecific done in %.2fs (DA=%s)",
                             asset,
@@ -509,7 +560,15 @@ def run_pipeline(config: dict):
                             base_feature_cols=all_features,
                             config=config
                         ))
-                        tracker.add(asset, horizon, f"{dataset_name}_All+RegimeInteraction", res_all_inter["mean_da"], res_all_inter["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_All+RegimeInteraction",
+                            res_all_inter["mean_da"],
+                            res_all_inter["fold_das"],
+                            n_test_obs=res_all_inter.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         logger.info(
                             "%s | H%s | %s | %s | All+RegimeInteraction done in %.2fs (DA=%s)",
                             asset,
@@ -533,7 +592,15 @@ def run_pipeline(config: dict):
                             feature_cols=all_features,
                             config=config,
                         ))
-                        tracker.add(asset, horizon, f"{dataset_name}_All+RegimeGated", res_gated["mean_da"], res_gated["fold_das"])
+                        tracker.add(
+                            asset,
+                            horizon,
+                            f"{news_version}__{dataset_name}_All+RegimeGated",
+                            res_gated["mean_da"],
+                            res_gated["fold_das"],
+                            n_test_obs=res_gated.get("n_test_obs"),
+                            eval_split="cv",
+                        )
                         logger.info(
                             "%s | H%s | %s | %s | All+RegimeGated done in %.2fs (DA=%s)",
                             asset,
@@ -558,8 +625,10 @@ def run_pipeline(config: dict):
            
     model_type = config["model"]["model_type"]
 
-    full_path = f"outputs/results_{model_type}_full.csv"
-    summary_path = f"outputs/results_{model_type}_summary.csv"
+    output_dir = config.get("output_dir", "outputs")
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    full_path = str(Path(output_dir) / f"results_{model_type}_full.csv")
+    summary_path = str(Path(output_dir) / f"results_{model_type}_summary.csv")
 
     tracker.save(full_path)
     tracker.save_summary(summary_path)
@@ -617,6 +686,79 @@ def persist_outputs(results, config):
         json.dump(artifact, f, indent=4)
 
     return output_dir
+
+
+def build_attention_datasets(df_model: pd.DataFrame, publication_cfg: dict):
+    datasets = [("Full", df_model)]
+    if "article_count" not in df_model.columns:
+        return datasets
+
+    percentiles = publication_cfg.get("attention_percentiles", [0.5, 0.6, 0.7, 0.8, 0.9])
+    train_fraction = publication_cfg.get("train_fraction", 0.6)
+    min_rows = publication_cfg.get("min_dataset_rows", 100)
+
+    anchor_end = max(1, int(len(df_model) * train_fraction))
+    anchor = df_model.iloc[:anchor_end]
+    if len(anchor) < 20:
+        logger.warning("Attention filtering skipped: not enough anchor rows.")
+        return datasets
+
+    for q in percentiles:
+        threshold = anchor["article_count"].quantile(q)
+        df_filtered = df_model[df_model["article_count"] > threshold].copy()
+        if len(df_filtered) > min_rows:
+            datasets.append((f"Top{int(q * 100)}", df_filtered))
+    return datasets
+
+
+def downsample_chrono(df: pd.DataFrame, sample_fraction: float, min_rows: int = 220):
+    if sample_fraction is None:
+        return df
+    try:
+        frac = float(sample_fraction)
+    except (TypeError, ValueError):
+        return df
+    if frac <= 0 or frac >= 1:
+        return df
+    n = len(df)
+    if n == 0:
+        return df
+
+    target_n = max(min_rows, int(n * frac))
+    target_n = min(target_n, n)
+    if target_n >= n:
+        return df
+
+    # Keep chronological coverage while reducing rows.
+    idx = np.linspace(0, n - 1, num=target_n, dtype=int)
+    return df.iloc[idx].copy()
+
+
+def build_feature_blocks(df_use: pd.DataFrame, df_macro: pd.DataFrame, config: dict, publication_cfg: dict):
+    df_use = df_use.copy()
+    news_features = [c for c in df_use.columns if c.startswith("emb_")]
+    if not news_features:
+        return None
+
+    macro_features = [c for c in df_use.columns if c in df_macro.columns]
+    price_cols = [c for c in config["price_features"] if c in df_use.columns]
+    interaction_cols = []
+
+    if publication_cfg.get("enable_news_macro_interactions", True) and macro_features:
+        df_use["emb_mean_raw"] = df_use[news_features].mean(axis=1)
+        for macro in macro_features:
+            col_name = f"emb_mean_raw_x_{macro}"
+            df_use[col_name] = df_use["emb_mean_raw"] * df_use[macro]
+            interaction_cols.append(col_name)
+
+    all_features = price_cols + macro_features + news_features + interaction_cols
+    return {
+        "df_use": df_use,
+        "price_cols": price_cols,
+        "macro_features": macro_features,
+        "news_features": news_features,
+        "all_features": all_features,
+    }
 
 
 def run_regime_specific_model(
@@ -704,6 +846,29 @@ def run_all_with_regime_interaction(df, base_feature_cols, config):
     )
 
 
+def compute_wilson_ci(mean_da, n_test_obs, z=1.96):
+    if mean_da is None or n_test_obs is None or n_test_obs <= 0:
+        return np.nan, np.nan
+    p = float(mean_da)
+    n = float(n_test_obs)
+    denom = 1 + (z ** 2) / n
+    center = (p + (z ** 2) / (2 * n)) / denom
+    margin = (z * math.sqrt((p * (1 - p) / n) + ((z ** 2) / (4 * (n ** 2))))) / denom
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+def compute_one_sided_p_value(mean_da, n_test_obs):
+    if mean_da is None or n_test_obs is None or n_test_obs <= 0:
+        return np.nan
+    p = float(mean_da)
+    n = float(n_test_obs)
+    se = math.sqrt(0.25 / n)
+    if se == 0:
+        return np.nan
+    z = (p - 0.5) / se
+    return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
 class ResultTracker:
     def __init__(self):
         self.records = []
@@ -716,7 +881,11 @@ class ResultTracker:
         mean_da,
         fold_das=None,
         regime_variant=None,
+        n_test_obs=None,
+        eval_split="cv",
     ):
+        ci_low, ci_high = compute_wilson_ci(mean_da, n_test_obs)
+        p_one_sided = compute_one_sided_p_value(mean_da, n_test_obs)
         self.records.append({
             "asset": asset,
             "horizon": horizon,
@@ -724,11 +893,17 @@ class ResultTracker:
             "mean_da": float(mean_da) if mean_da is not None else np.nan,
             "fold_das": fold_das,
             "regime_variant": regime_variant,
+            "n_test_obs": int(n_test_obs) if n_test_obs is not None else np.nan,
+            "ci_low_95": ci_low,
+            "ci_high_95": ci_high,
+            "p_gt_0_5": p_one_sided,
+            "eval_split": eval_split,
         })
 
     def best_for(self, asset, horizon):
         df = pd.DataFrame(self.records)
         df = df[(df["asset"] == asset) & (df["horizon"] == horizon)]
+        df = df.dropna(subset=["mean_da"])
         return df.loc[df["mean_da"].idxmax()]
 
     def summary_by_asset(self):
@@ -755,6 +930,11 @@ class ResultTracker:
                     "horizon": horizon,
                     "best_model": best_row["model"],
                     "best_da": best_row["mean_da"],
+                    "n_test_obs": best_row.get("n_test_obs"),
+                    "ci_low_95": best_row.get("ci_low_95"),
+                    "ci_high_95": best_row.get("ci_high_95"),
+                    "p_gt_0_5": best_row.get("p_gt_0_5"),
+                    "eval_split": best_row.get("eval_split"),
                 })
 
         return pd.DataFrame(summary_rows)
@@ -771,9 +951,18 @@ class ResultTracker:
 
 def normalize_result(res):
     if "mean_da" in res:
-        return res
+        out = res
     elif "mean_fold_da" in res:
         res["mean_da"] = res["mean_fold_da"]
-        return res
+        out = res
     else:
         raise ValueError("Trainer result missing mean_da / mean_fold_da")
+
+    if "n_test_obs" not in out:
+        if "y_test" in out:
+            out["n_test_obs"] = len(out["y_test"])
+        elif "fold_sizes" in out:
+            out["n_test_obs"] = int(sum(out["fold_sizes"]))
+        else:
+            out["n_test_obs"] = None
+    return out

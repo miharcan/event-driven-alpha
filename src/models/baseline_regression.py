@@ -1,9 +1,8 @@
 import pandas as pd
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
 from sklearn.linear_model import Ridge
-from sklearn.decomposition import PCA
+from src.models.utils import apply_fold_pca, expanding_window_slices
 
 
 def directional_accuracy(y_true, y_pred):
@@ -29,26 +28,31 @@ def run_regime_gated_model(
     X = df[feature_cols].copy()
     y = df[target_col]
 
-    n = len(df)
-    # folds = 4
     folds = config["model"]["n_splits"]
-    initial_train_size = int(n * 0.6)
-    fold_size = int((n - initial_train_size) / folds)
+    splits = expanding_window_slices(len(df), folds, train_fraction=0.6)
+    if not splits:
+        raise ValueError("Not enough data for walk-forward split.")
 
     all_predictions = []
     all_y_test = []
     fold_das = []
+    fold_sizes = []
 
-    for i in range(folds):
-
-        train_end = initial_train_size + i * fold_size
-        test_end = train_end + fold_size
+    for train_end, test_end in splits:
 
         X_train = X.iloc[:train_end].copy()
         y_train = y.iloc[:train_end]
 
         X_test = X.iloc[train_end:test_end].copy()
         y_test = y.iloc[train_end:test_end]
+        fold_sizes.append(len(y_test))
+
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
 
         # Split by regime
         high_mask = df.iloc[:train_end]["vol_regime_high"] == 1
@@ -91,6 +95,8 @@ def run_regime_gated_model(
         "fold_das": fold_das,
         "predictions": np.array(all_predictions),
         "y_test": np.array(all_y_test),
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }
 
 
@@ -114,69 +120,32 @@ def train_baseline_regression(
     X = df[feature_cols].copy()
     y = df[target_col]
 
-    n = len(df)
-    # folds = 4
     folds = config["model"]["n_splits"]
     train_start = 0
-    initial_train_size = int(n * 0.6)
-    fold_size = int((n - initial_train_size) / folds)
+    splits = expanding_window_slices(len(df), folds, train_fraction=0.6)
+    if not splits:
+        raise ValueError("Not enough data for walk-forward split.")
 
     all_predictions = []
     all_y_test = []
     fold_das = []
+    fold_sizes = []
 
-    for i in range(folds):
-
-        train_end = initial_train_size + i * fold_size
-        test_end = train_end + fold_size
+    for train_end, test_end in splits:
 
         X_train = X.iloc[train_start:train_end].copy()
         y_train = y.iloc[train_start:train_end]
 
         X_test = X.iloc[train_end:test_end].copy()
         y_test = y.iloc[train_end:test_end]
+        fold_sizes.append(len(y_test))
 
-        # ---- Detect embedding columns
-        embedding_cols = [c for c in X.columns if c.startswith("emb_")]
-
-        if embedding_cols:
-
-            max_components = min(
-                X_train[embedding_cols].shape[0],
-                X_train[embedding_cols].shape[1]
-            )
-
-            n_components = min(
-                config.get("embedding_pca_components", 75),
-                max_components
-            )
-            pca = PCA(n_components=n_components)
-
-            X_train_emb = pca.fit_transform(X_train[embedding_cols])
-            X_test_emb = pca.transform(X_test[embedding_cols])
-
-            # Drop raw embedding columns
-            X_train = X_train.drop(columns=embedding_cols)
-            X_test = X_test.drop(columns=embedding_cols)
-
-            # Create PCA DataFrames
-            pca_columns = [f"emb_pca_{j}" for j in range(n_components)]
-
-            pca_df_train = pd.DataFrame(
-                X_train_emb,
-                index=X_train.index,
-                columns=pca_columns
-            )
-
-            pca_df_test = pd.DataFrame(
-                X_test_emb,
-                index=X_test.index,
-                columns=pca_columns
-            )
-
-            # Concatenate cleanly
-            X_train = pd.concat([X_train, pca_df_train], axis=1)
-            X_test = pd.concat([X_test, pca_df_test], axis=1)
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
 
         model = Ridge(alpha=config.get("ridge_alpha", 1.0))
         model.fit(X_train, y_train)
@@ -201,6 +170,8 @@ def train_baseline_regression(
         "predictions": np.array(all_predictions),
         "fold_das": fold_das,
         "mean_fold_da": np.mean(fold_das),
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }
 
 

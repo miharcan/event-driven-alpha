@@ -1,9 +1,8 @@
 from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.decomposition import PCA
 import numpy as np
 
 from src.models.baseline_regression import directional_accuracy
+from src.models.utils import apply_fold_pca, expanding_window_slices
 
 
 def train(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
@@ -13,20 +12,15 @@ def train(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
     X = df[feature_cols].copy()
     y = df[target_col]
 
-    n = len(df)
-
-    # ---- Walk-forward setup
-    # folds = 4
     folds = config["model"]["n_splits"]
-    initial_train_size = int(n * 0.6)
-    fold_size = int((n - initial_train_size) / folds)
-
-    if fold_size <= 0:
+    splits = expanding_window_slices(len(df), folds, train_fraction=0.6)
+    if not splits:
         raise ValueError("Not enough data for walk-forward split.")
 
     all_predictions = []
     all_y_test = []
     fold_das = []
+    fold_sizes = []
 
     # ---- Aggregate regime tracking
     all_high_y = []
@@ -35,40 +29,24 @@ def train(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
     all_low_y = []
     all_low_preds = []
 
-    for i in range(folds):
-
-        train_end = initial_train_size + i * fold_size
-        test_end = train_end + fold_size
-
-        # print(
-        #     f"Fold {i+1}: "
-        #     f"Train end {df.index[train_end]} | "
-        #     f"Test start {df.index[train_end]} | "
-        #     f"Test end {df.index[test_end-1]}"
-        # )
+    for train_end, test_end in splits:
 
         X_train = X.iloc[:train_end].copy()
         y_train = y.iloc[:train_end]
 
         X_test = X.iloc[train_end:test_end].copy()
         y_test = y.iloc[train_end:test_end]
-
-        # ---- Regime diagnostics (only if regime column exists)
-        if "vol_regime_high" in X_test.columns:
-
-            regime_counts = X_test["vol_regime_high"].value_counts()
-
-            high_count = regime_counts.get(1, 0)
-            low_count = regime_counts.get(0, 0)
-
-            # print(
-            #     f"Fold {i+1} Regime Distribution | "
-            #     f"High Vol: {high_count} | Low Vol: {low_count}"
-            # )
+        fold_sizes.append(len(y_test))
 
         all_test_indices.extend(X_test.index)
 
-        # ---- No embedding logic here anymore
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
+
         model = Ridge(alpha=alpha)
         model.fit(X_train, y_train)
 
@@ -95,33 +73,20 @@ def train(df, config, feature_cols, alpha=1.0, target_col="fwd_return"):
         fold_da = directional_accuracy(y_test, preds)
         fold_das.append(fold_da)
 
-    # ---- Aggregated Regime DA
     if len(all_high_y) > 10:
-        high_da = directional_accuracy(
-            np.array(all_high_y),
-            np.array(all_high_preds)
-        )
-        # print(f"Aggregated High-Vol DA: {high_da:.4f} | Samples: {len(all_high_y)}")
+        directional_accuracy(np.array(all_high_y), np.array(all_high_preds))
 
     if len(all_low_y) > 10:
-        low_da = directional_accuracy(
-            np.array(all_low_y),
-            np.array(all_low_preds)
-        )
-        # print(f"Aggregated Low-Vol DA: {low_da:.4f} | Samples: {len(all_low_y)}")
-    
-    # mse = mean_squared_error(all_y_test, all_predictions)
-    # r2 = r2_score(all_y_test, all_predictions)
+        directional_accuracy(np.array(all_low_y), np.array(all_low_preds))
 
     return {
-        # "model": model,
-        # "mse": mse,
-        # "r2": r2,
         "y_test": np.array(all_y_test),
         "predictions": np.array(all_predictions),
         "test_index": all_test_indices,
         "fold_das": fold_das,
         "mean_fold_da": np.mean(fold_das),
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }
 
 
@@ -138,33 +103,34 @@ def train_regime_specific(df, config, feature_cols, alpha=1.0, target_col="fwd_r
     if "vol_regime_high" in X.columns:
         X = X.drop(columns=["vol_regime_high"])
 
-    n = len(df)
-    # folds = 4
     folds = config["model"]["n_splits"]
-    initial_train_size = int(n * 0.6)
-    fold_size = int((n - initial_train_size) / folds)
-
-    if fold_size <= 0:
+    splits = expanding_window_slices(len(df), folds, train_fraction=0.6)
+    if not splits:
         raise ValueError("Not enough data for walk-forward split.")
 
     all_predictions = []
     all_y_test = []
     fold_das = []
+    fold_sizes = []
 
-    for i in range(folds):
+    for train_end, test_end in splits:
 
-        train_end = initial_train_size + i * fold_size
-        test_end = train_end + fold_size
-
-        X_train = X.iloc[:train_end]
+        X_train = X.iloc[:train_end].copy()
         y_train = y.iloc[:train_end]
         regime_train = regimes.iloc[:train_end]
 
-        X_test = X.iloc[train_end:test_end]
+        X_test = X.iloc[train_end:test_end].copy()
         y_test = y.iloc[train_end:test_end]
         regime_test = regimes.iloc[train_end:test_end]
+        fold_sizes.append(len(y_test))
 
-        # ---- Split train by regime
+        pca_components = config.get("publication", {}).get("embedding_pca_components", 10)
+        X_train, X_test = apply_fold_pca(
+            X_train,
+            X_test,
+            pca_components=pca_components,
+        )
+
         high_mask_train = regime_train == 1
         low_mask_train = regime_train == 0
 
@@ -209,5 +175,7 @@ def train_regime_specific(df, config, feature_cols, alpha=1.0, target_col="fwd_r
         "predictions": np.array(all_predictions),
         "y_test": np.array(all_y_test),
         "mean_fold_da": np.mean(fold_das),
-        "fold_das": fold_das
+        "fold_das": fold_das,
+        "fold_sizes": fold_sizes,
+        "n_test_obs": int(sum(fold_sizes)),
     }

@@ -58,9 +58,31 @@ def get_model_trainer(model_type, config):
         try:
             from src.models.lstm_model import train_lstm
         except Exception as exc:
-            raise _optional_import_error("tensorflow", "lstm", exc) from exc
+            raise _optional_import_error("torch", "lstm", exc) from exc
         return lambda df, feature_cols: train_lstm(
             df,
+            feature_cols=feature_cols,
+            config=config,
+        )
+
+    elif model_type == "tcn":
+        try:
+            from src.models.tcn_model import train_tcn
+        except Exception as exc:
+            raise _optional_import_error("torch", "tcn", exc) from exc
+        return lambda df, feature_cols: train_tcn(
+            df=df,
+            feature_cols=feature_cols,
+            config=config,
+        )
+
+    elif model_type == "patchtst":
+        try:
+            from src.models.patchtst_model import train_patchtst
+        except Exception as exc:
+            raise _optional_import_error("torch", "patchtst", exc) from exc
+        return lambda df, feature_cols: train_patchtst(
+            df=df,
             feature_cols=feature_cols,
             config=config,
         )

@@ -39,12 +39,12 @@ The goal is to evaluate whether predictive signal is:
 -   Log returns and lagged returns
 -   Rolling volatility measures
 -   Volatility regime classification
--   News embeddings (dimension-reduced)
+-   News embeddings (fold-safe dimensionality reduction)
 -   Event intensity filtering (percentile-based)
 -   Optional interaction features
 
-All feature engineering is performed prior to model training to prevent
-leakage.
+Leak-sensitive transforms (for example PCA over embedding features) are
+fit inside each walk-forward fold using train data only.
 
 ------------------------------------------------------------------------
 
@@ -100,6 +100,17 @@ Results are stored as:
 -   Per-model summary results
 -   Final cross-model comparison table
 
+### Publication-Hardening Defaults
+
+- Embedding PCA is fit on train folds only and then applied to test folds.
+- Event-intensity thresholds (`Top50`...`Top90`) are calibrated on the
+  initial train window, then applied forward.
+- Model identifiers preserve news provenance:
+  `GlobalNews__...` vs `AssetNews__...`.
+- Full result tables now include `n_test_obs`, Wilson 95% confidence
+  intervals, and one-sided p-values against a 50% directional baseline.
+- Ridge, XGBoost, and LightGBM use the same expanding-window geometry.
+
 ------------------------------------------------------------------------
 
 ## Event-Intensity Gradient
@@ -148,6 +159,10 @@ A final comparison script merges model families into:
 ------------------------------------------------------------------------
 
 ## Key Findings
+
+The findings below come from prior runs and should be treated as
+illustrative until regenerated with the current publication-hardened
+pipeline.
 
 1.  Event intensity unlocks the signal.
 Full-sample models average ~52–58% directional accuracy. Conditioning on high-information regimes (Top 60–90%) pushes performance to 65–78% DA across metals, energy, and broader commodities.
@@ -216,6 +231,13 @@ After running all model families:
 
 ``` bash
 python analysis/final_model_comparison.py
+```
+
+Generate a publication-filtered summary (minimum sample size +
+significance threshold):
+
+``` bash
+python analysis/publication_report.py --outputs-dir outputs --min-test-obs 120 --p-threshold 0.05
 ```
 
 ### Troubleshooting Long Runs
