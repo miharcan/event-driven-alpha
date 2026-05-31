@@ -25,6 +25,25 @@ The goal is to evaluate whether predictive signal is:
 
 ------------------------------------------------------------------------
 
+## Preprint and Citation
+
+**Event-Conditioned News Representations for Discovering Textual Information Regimes in Commodity Forecasting**  
+Mihael Arcan (preprint)
+
+[![Google Scholar](https://img.shields.io/badge/Google%20Scholar-View%20Preprint-4285F4?logo=googlescholar&logoColor=white)](https://scholar.google.com/citations?view_op=view_citation&hl=en&user=iI8CT3EAAAAJ&sortby=pubdate&citation_for_view=iI8CT3EAAAAJ:_Ybze24A_UAC)
+
+If you use this repository, please cite:
+
+```bibtex
+@misc{arcan2026event_conditioned_news,
+  author       = {Arcan, Mihael},
+  title        = {Event-Conditioned News Representations for Discovering Textual Information Regimes in Commodity Forecasting},
+  year         = {2026},
+  howpublished = {Preprint}}
+```
+
+------------------------------------------------------------------------
+
 ## Architecture
 
 ### Data Inputs
