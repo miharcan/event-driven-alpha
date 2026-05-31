@@ -39,7 +39,7 @@ If you use this repository, please cite:
   author       = {Arcan, Mihael},
   title        = {Event-Conditioned News Representations for Discovering Textual Information Regimes in Commodity Forecasting},
   year         = {2026},
-  howpublished = {Preprint}}
+  howpublished = {10.5281/zenodo.20326048}}
 ```
 
 ------------------------------------------------------------------------
